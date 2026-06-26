@@ -1,0 +1,57 @@
+services:
+  freshrss:
+    image: freshrss/freshrss:latest
+    container_name: freshrss
+    restart: unless-stopped
+    ports:
+      - "80:80"
+    environment:
+      TZ: Asia/Kolkata
+      CRON_MIN: "*/1"
+    volumes:
+      - freshrss_data:/var/www/FreshRSS/data
+      - freshrss_extensions:/var/www/FreshRSS/extensions
+      - ./extensions/RssLeadsStatus:/var/www/FreshRSS/extensions/RssLeadsStatus
+      - ./freshrss-public/rss-leads-status.php:/var/www/FreshRSS/p/rss-leads-status.php
+      - ./freshrss-public/rss-leads-ai.php:/var/www/FreshRSS/p/rss-leads-ai.php
+
+  ai-filter:
+    image: freshrss/freshrss:latest
+    container_name: rss-leads-ai-filter
+    restart: unless-stopped
+    depends_on:
+      - freshrss
+    environment:
+      TZ: Asia/Kolkata
+      FRESHRSS_USER: ${FRESHRSS_USER:-invictine}
+      GEMINI_API_KEY: ${GEMINI_API_KEY:-}
+      GEMINI_MODEL: ${GEMINI_MODEL:-gemini-2.5-flash-lite}
+      GEMINI_MODELS: ${GEMINI_MODELS:-gemini-2.5-flash-lite,gemini-2.5-flash,gemini-flash-latest}
+      AI_FILTER_BATCH_SIZE: ${AI_FILTER_BATCH_SIZE:-8}
+      AI_FILTER_CONTENT_CHARS: ${AI_FILTER_CONTENT_CHARS:-900}
+      AI_FILTER_INTERVAL_SECONDS: ${AI_FILTER_INTERVAL_SECONDS:-300}
+      AI_FILTER_LOOKBACK_DAYS: ${AI_FILTER_LOOKBACK_DAYS:-14}
+    entrypoint: ["/bin/sh", "-c"]
+    command: >
+      'while true; do
+        php /opt/rss-leads-stack/scripts/gemini-ai-filter.php || true;
+        sleep "$${AI_FILTER_INTERVAL_SECONDS:-300}";
+      done'
+    volumes:
+      - freshrss_data:/var/www/FreshRSS/data
+      - ./scripts/gemini-ai-filter.php:/opt/rss-leads-stack/scripts/gemini-ai-filter.php:ro
+
+  rssbridge:
+    image: rssbridge/rss-bridge:latest
+    container_name: rssbridge
+    restart: unless-stopped
+    profiles:
+      - rssbridge
+    ports:
+      - "8081:80"
+    environment:
+      TZ: Asia/Kolkata
+
+volumes:
+  freshrss_data:
+  freshrss_extensions:

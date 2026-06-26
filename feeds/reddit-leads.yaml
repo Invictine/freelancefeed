@@ -1,0 +1,109 @@
+# Reddit lead feed policy derived from deep-research-report.md.
+# Goal: track every subreddit in the report without triggering Reddit's
+# back-to-back request rate limits.
+timezone: Asia/Kolkata
+source_report: deep-research-report.md
+live_apply_script: scripts/apply-freshrss-reddit-leads.php
+defaults:
+  sort: new
+  review_cadence: daily
+  user_agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:126.0) Gecko/20100101 Firefox/126.0
+  ttl_seconds: 60
+
+live_feeds:
+  qualified:
+    title: Reddit Leads - qualified deep-research communities
+    category: Reddit Leads
+    behavior: Unqualified posts are auto-marked read so likely leads remain unread.
+  unqualified:
+    title: Reddit Leads - unqualified deep-research communities
+    category: Unqualified Reddit Leads
+    behavior: Likely qualified posts are auto-marked read so review/noise remains unread.
+  url: https://www.reddit.com/r/forhire+FindVideoEditors+VideoEditingJobs+videography+socialmedia+SocialMediaMarketing+n8n+jobbit+VideoEditors+creators+HireaWriter+podcasting+freelance_forhire+slavelabour+DoneDirtCheap+B2BForHire+SocialMediaManagers+PromptEngineering+Automate/new/.rss
+  reason: FreshRSS receives HTTP 429 when it fetches many Reddit feeds back-to-back, so the live subscription uses one multireddit RSS request.
+  qualified_mark_read_filters:
+    - intitle:/\[for hire\]/i OR intitle:/\[hire me\]/i OR intitle:/^hire (a|an) /i OR intitle:"for hire only" OR intitle:"hire me" OR intitle:portfolio
+    - intitle:/\[offer\]/i OR intitle:"self promotion" OR intitle:advertisement
+    - intitle:unpaid OR intitle:volunteer OR intitle:exposure OR intitle:free
+    - intitle:"how do I sell" OR intitle:"looking for clients" OR intitle:"lead generation" OR intitle:"appointment setter"
+    - '!intitle:/\[hiring\]/i !intitle:/\[paid\]/i !intitle:/\[task\]/i !intitle:hiring !intitle:paid !intitle:hire !intitle:needed !intitle:looking !intitle:developer !intitle:automation !intitle:editor !intitle:manager !intitle:"social media" !intitle:"podcast editor" !intitle:"will pay" !intitle:prompt !intitle:cofounder !intitle:help'
+  unqualified_mark_read_filters:
+    - intitle:/\[hiring\]/i OR intitle:/\[paid\]/i OR intitle:/\[task\]/i OR intitle:hiring OR intitle:paid OR intitle:needed OR intitle:looking OR intitle:developer OR intitle:automation OR intitle:editor OR intitle:manager OR intitle:"social media" OR intitle:"podcast editor" OR intitle:"will pay" OR intitle:prompt OR intitle:cofounder OR intitle:help
+
+subreddits:
+  - subreddit: forhire
+    priority: top
+    category: general freelance
+    role: broad paid-work marketplace
+  - subreddit: FindVideoEditors
+    priority: top
+    category: video editing
+    role: client-to-editor requests
+  - subreddit: VideoEditingJobs
+    priority: top
+    category: video editing
+    role: editor jobs board
+  - subreddit: videography
+    priority: high
+    category: video production
+    role: hiring/job-posting flair
+  - subreddit: socialmedia
+    priority: high
+    category: social media
+    role: weekly hiring thread
+  - subreddit: SocialMediaMarketing
+    priority: high
+    category: social media
+    role: monthly hiring thread
+  - subreddit: n8n
+    priority: high
+    category: automation
+    role: automation and AI workflow hiring
+  - subreddit: jobbit
+    priority: high
+    category: technical freelance
+    role: technical jobs and workflow work
+  - subreddit: VideoEditors
+    priority: medium
+    category: video editing
+    role: occasional creator hiring
+  - subreddit: creators
+    priority: medium
+    category: creator economy
+    role: creator-side editing and content ops demand
+  - subreddit: HireaWriter
+    priority: medium
+    category: writing and scripts
+    role: scripts, newsletters, captions, SEO content
+  - subreddit: podcasting
+    priority: medium
+    category: podcasting
+    role: podcast editing and repurposing demand
+  - subreddit: freelance_forhire
+    priority: watchlist
+    category: general freelance
+    role: noisy hiring watchlist
+  - subreddit: slavelabour
+    priority: watchlist
+    category: low-budget tasks
+    role: task watchlist
+  - subreddit: DoneDirtCheap
+    priority: watchlist
+    category: low-budget tasks
+    role: low-budget hiring watchlist
+  - subreddit: B2BForHire
+    priority: watchlist
+    category: b2b services
+    role: mixed-quality B2B hiring watchlist
+  - subreddit: SocialMediaManagers
+    priority: research
+    category: social media
+    role: buyer-intent and market intelligence
+  - subreddit: PromptEngineering
+    priority: research
+    category: ai workflow
+    role: AI buyer-intent and prompt-work watchlist
+  - subreddit: Automate
+    priority: research
+    category: automation
+    role: automation pain-point research
