@@ -1,8 +1,13 @@
 <?php
 declare(strict_types=1);
 
-$dbPath = '/var/www/FreshRSS/data/users/invictine/db.sqlite';
-$configPath = '/var/www/FreshRSS/data/users/invictine/config.php';
+$freshRssUser = getenv('RSS_LEADS_USER') ?: (getenv('FRESHRSS_USER') ?: 'invictine');
+if (preg_match('/^[A-Za-z0-9_.-]+$/', $freshRssUser) !== 1) {
+	throw new InvalidArgumentException('FreshRSS username contains unsupported characters.');
+}
+
+$dbPath = getenv('FRESHRSS_DB') ?: "/var/www/FreshRSS/data/users/{$freshRssUser}/db.sqlite";
+$configPath = "/var/www/FreshRSS/data/users/{$freshRssUser}/config.php";
 $systemConfigPath = '/var/www/FreshRSS/data/config.php';
 
 $redditUserAgent = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:126.0) Gecko/20100101 Firefox/126.0';

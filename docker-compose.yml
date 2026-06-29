@@ -8,12 +8,14 @@ services:
     environment:
       TZ: Asia/Kolkata
       CRON_MIN: "*/1"
+      RSS_LEADS_USER: ${FRESHRSS_USER:-invictine}
     volumes:
       - freshrss_data:/var/www/FreshRSS/data
       - freshrss_extensions:/var/www/FreshRSS/extensions
       - ./extensions/RssLeadsStatus:/var/www/FreshRSS/extensions/RssLeadsStatus
       - ./freshrss-public/rss-leads-status.php:/var/www/FreshRSS/p/rss-leads-status.php
       - ./freshrss-public/rss-leads-ai.php:/var/www/FreshRSS/p/rss-leads-ai.php
+      - ./freshrss-public/rss-leads-high-priority.php:/var/www/FreshRSS/p/rss-leads-high-priority.php
 
   ai-filter:
     image: freshrss/freshrss:latest
@@ -24,13 +26,24 @@ services:
     environment:
       TZ: Asia/Kolkata
       FRESHRSS_USER: ${FRESHRSS_USER:-invictine}
+      RSS_LEADS_USER: ${FRESHRSS_USER:-invictine}
       GEMINI_API_KEY: ${GEMINI_API_KEY:-}
-      GEMINI_MODEL: ${GEMINI_MODEL:-gemini-2.5-flash-lite}
-      GEMINI_MODELS: ${GEMINI_MODELS:-gemini-2.5-flash-lite,gemini-2.5-flash,gemini-flash-latest}
-      AI_FILTER_BATCH_SIZE: ${AI_FILTER_BATCH_SIZE:-8}
+      GEMINI_MODEL: ${GEMINI_MODEL:-gemini-3.1-flash-lite}
+      GEMINI_MODELS: ${GEMINI_MODELS:-gemini-3.1-flash-lite,gemini-3-flash,gemma4b}
+      AI_GEMMA_MODEL: ${AI_GEMMA_MODEL:-gemma4-31b}
+      AI_REFINE_MODELS: ${AI_REFINE_MODELS:-gemini-3.1-flash-lite,gemini-3-flash}
+      AI_FILTER_ALLOW_MODEL_FALLBACKS: ${AI_FILTER_ALLOW_MODEL_FALLBACKS:-1}
+      AI_FILTER_BATCH_SIZE: ${AI_FILTER_BATCH_SIZE:-20}
+      AI_JOB_TYPE_OPTION_LIMIT: ${AI_JOB_TYPE_OPTION_LIMIT:-25}
+      AI_GEMMA_FIRST_PASS_BATCH_SIZE: ${AI_GEMMA_FIRST_PASS_BATCH_SIZE:-1}
+      AI_GEMMA_FIRST_PASS_REQUESTS_PER_RUN: ${AI_GEMMA_FIRST_PASS_REQUESTS_PER_RUN:-3}
+      AI_FLASH_LITE_REFINE_BATCH_SIZE: ${AI_FLASH_LITE_REFINE_BATCH_SIZE:-4}
       AI_FILTER_CONTENT_CHARS: ${AI_FILTER_CONTENT_CHARS:-900}
-      AI_FILTER_INTERVAL_SECONDS: ${AI_FILTER_INTERVAL_SECONDS:-300}
+      AI_FILTER_INTERVAL_SECONDS: ${AI_FILTER_INTERVAL_SECONDS:-180}
       AI_FILTER_LOOKBACK_DAYS: ${AI_FILTER_LOOKBACK_DAYS:-14}
+      AI_FILTER_DAILY_REQUEST_BUDGET: ${AI_FILTER_DAILY_REQUEST_BUDGET:-0}
+      AI_MODEL_DAILY_LIMITS: ${AI_MODEL_DAILY_LIMITS:-gemini-3.1-flash-lite=500,gemini-3-flash=20,gemma4-31b=1500}
+      AI_FILTER_QUOTA_COOLDOWN_SECONDS: ${AI_FILTER_QUOTA_COOLDOWN_SECONDS:-21600}
     entrypoint: ["/bin/sh", "-c"]
     command: >
       'while true; do
@@ -40,6 +53,7 @@ services:
     volumes:
       - freshrss_data:/var/www/FreshRSS/data
       - ./scripts/gemini-ai-filter.php:/opt/rss-leads-stack/scripts/gemini-ai-filter.php:ro
+      - ./scripts/sync-freshrss-high-priority.php:/opt/rss-leads-stack/scripts/sync-freshrss-high-priority.php:ro
 
   rssbridge:
     image: rssbridge/rss-bridge:latest

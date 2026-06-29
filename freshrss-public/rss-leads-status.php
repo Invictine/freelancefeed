@@ -4,8 +4,14 @@ declare(strict_types=1);
 header('Content-Type: application/json; charset=utf-8');
 header('Cache-Control: no-store');
 
-$dbPath = '/var/www/FreshRSS/data/users/invictine/db.sqlite';
-$logPath = '/var/www/FreshRSS/data/users/invictine/log.txt';
+$user = getenv('RSS_LEADS_USER') ?: (getenv('FRESHRSS_USER') ?: 'invictine');
+if (preg_match('/^[A-Za-z0-9_.-]+$/', $user) !== 1) {
+	http_response_code(500);
+	exit;
+}
+
+$dbPath = "/var/www/FreshRSS/data/users/{$user}/db.sqlite";
+$logPath = "/var/www/FreshRSS/data/users/{$user}/log.txt";
 $feedNames = [
 	'Reddit Leads - qualified deep-research communities',
 	'Reddit Leads - unqualified deep-research communities',

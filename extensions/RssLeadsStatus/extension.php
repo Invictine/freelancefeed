@@ -6,7 +6,9 @@ final class RssLeadsStatusExtension extends Minz_Extension {
 	public function init(): void {
 		parent::init();
 
-		Minz_View::appendStyle($this->getFileUrl('style.css'));
-		Minz_View::appendScript($this->getFileUrl('script.js'));
+		$styleVersion = (string)@filemtime(__DIR__ . '/static/style.css');
+		$scriptVersion = (string)@filemtime(__DIR__ . '/static/script.js');
+		Minz_View::appendStyle($this->getFileUrl('style.css') . '?v=' . $styleVersion);
+		Minz_View::appendScript($this->getFileUrl('script.js') . '?v=' . $scriptVersion);
 	}
 }

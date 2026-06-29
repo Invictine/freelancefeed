@@ -1,230 +1,412 @@
 # FreshRSS Leads Stack
 
-This Docker Compose stack runs FreshRSS as the central RSS backend and
-optionally runs RSSBridge for sites that do not provide native feeds.
+FreshRSS Leads Stack turns Reddit and RSS sources into a small lead dashboard.
+It watches selected communities, keeps likely hiring posts visible, moves noisy
+posts into a separate review feed, and can use Gemini/Gemma to add short
+summaries, priority labels, and reusable job-type tags.
 
-The web ports are exposed on the Docker host. In the dedicated Proxmox LXC,
-FreshRSS is available at `http://invictinefeed.local` or
-`http://192.168.1.70`; optional RSSBridge is available at port `8081`.
+The stack is built around FreshRSS, so you still own the feeds and can read them
+from FreshRSS itself or from apps such as FeedFlow.
 
-## Prerequisites
+## What You Get
 
-- Docker Engine
-- Docker Compose v2 (`docker compose`)
+- A self-hosted FreshRSS instance for lead feeds.
+- A ready-made Reddit lead feed covering the subreddits listed in
+  [feeds/reddit-leads.yaml](feeds/reddit-leads.yaml).
+- Three lead categories:
+  - `High Priority` for AI-classified high-priority leads.
+  - `Reddit Leads` for posts that look like real hiring opportunities.
+  - `Unqualified Reddit Leads` for offers, self-promotion, advice posts, and
+    other noise worth reviewing separately.
+- A FreshRSS extension with:
+  - Reddit refresh status.
+  - Manual refresh button.
+  - Reddit rate-limit warnings.
+  - subreddit badges on Reddit posts.
+  - AI summaries, priority badges, job-type badges, and an AI status dashboard.
+- Optional AI classification using Google Gemini/Gemma.
+- Optional RSSBridge service for sources that do not provide normal RSS feeds.
 
-## Start FreshRSS
+## How It Works
 
-From `/opt/rss-leads-stack`:
+```text
+Reddit RSS / other RSS
+        |
+        v
+FreshRSS stores articles
+        |
+        v
+FreshRSS filters split likely leads from obvious noise
+        |
+        v
+Optional AI worker adds summary + priority
+        |
+        v
+High-priority sync routes `high` leads into a dedicated category
+        |
+        v
+Read in FreshRSS or FeedFlow
+```
+
+The AI worker uses four priority labels:
+
+| Priority | Meaning |
+|---|---|
+| `high` | Paid, urgent, budgeted, or ready-to-hire work. |
+| `medium` | Looks paid or real, but urgency or budget is unclear. |
+| `low` | Still a possible buyer, but vague, unpaid, or weak. |
+| `not_hiring` | Not a buyer hiring for a role, task, or vendor. Examples: freelancer offers, portfolios, hire-me posts, job seekers, advice, showcases, news, spam, or discussion. |
+
+`not_hiring` items are moved out of the qualified lead feed and left visible in
+the unqualified review feed.
+
+The AI worker also assigns a `job_type` label such as `video editing` or
+`scriptwriting`. These labels are stored in `rss_leads_job_types`; future AI
+requests receive the existing list and are told to choose from it when possible,
+only creating a new concise label when none fits. High-priority items also get a
+FreshRSS/RSS category tag like `job:video_editing`.
+
+`high` items are routed into the `High Priority` category through a derived feed
+named `High Priority Reddit Leads`, and are marked read in the source Reddit
+categories so the unread views stay separated.
+
+## Why It Avoids Limits
+
+The stack tries to avoid both Reddit and AI API limits.
+
+- Reddit is fetched as one combined multireddit RSS feed instead of many
+  back-to-back subreddit requests.
+- FreshRSS mark-read filters remove obvious noise without calling an AI model.
+- The AI worker remembers which posts were already classified for the current
+  prompt version, so it does not keep reprocessing the same item.
+- Gemma handles fast first-pass caching one post at a time.
+- Gemini Flash Lite refines Gemma-cached items in small batches.
+- Each model has its own local daily request counter and backoff state.
+
+Default AI request plan:
+
+| Stage | Model alias | API model | Batch size | Local daily cap |
+|---|---|---|---:|---:|
+| First pass | `gemma4-31b` | `gemma-4-31b-it` | 1 | 1,500 |
+| Refinement | `gemini-3.1-flash-lite` | `gemini-3.1-flash-lite` | 4 | 500 |
+| Fallback refinement | `gemini-3-flash` | `gemini-3-flash-preview` | 4 | 20 |
+
+Note: the worker does not use `gemini-3.1-flash` because the live Gemini model
+list did not expose that name for text generation when this was configured.
+
+## Requirements
+
+- Docker Engine.
+- Docker Compose.
+- A browser.
+- Optional: a Google Gemini API key for AI summaries and priority labels.
+- Optional: FeedFlow or another FreshRSS-compatible reader.
+
+Most examples below use `docker compose`. If your system still uses Compose v1,
+use `docker-compose` instead.
+
+## Quick Start
+
+1. Clone the repository.
 
 ```bash
-docker compose pull
+git clone https://github.com/YOUR-USERNAME/rss-leads-stack.git
+cd rss-leads-stack
+```
+
+2. Create a `.env` file.
+
+Use the FreshRSS username you plan to create during the FreshRSS setup wizard.
+The AI key is optional. FreshRSS still works without it.
+
+```text
+FRESHRSS_USER=your_username
+# GEMINI_API_KEY=your_gemini_api_key
+```
+
+If you skip `.env`, the stack defaults to `FRESHRSS_USER=invictine` and AI
+requests are skipped unless `GEMINI_API_KEY` is set another way.
+
+Remove the `#` from `GEMINI_API_KEY` only when you have a real API key.
+
+3. Start FreshRSS and the AI worker.
+
+```bash
 docker compose up -d
 ```
 
-Open `http://invictinefeed.local` from a browser on the LAN and complete the
-FreshRSS installer.
+4. Open FreshRSS.
 
-For the initial single-host setup, select SQLite during installation. The
-database, application data, and installed extensions are retained in named
-Docker volumes.
-
-FreshRSS refreshes feeds automatically every minute using `CRON_MIN=*/1`.
-The container timezone is `Asia/Kolkata`.
-
-## Optional RSSBridge service
-
-Start FreshRSS and RSSBridge together:
-
-```bash
-docker compose --profile rssbridge up -d
-```
-
-RSSBridge is then available on the LXC's LAN address at:
+Use the address of the machine running Docker:
 
 ```text
-http://<LXC-IP>:8081
+http://localhost
 ```
 
-From inside the Compose network, FreshRSS can reach RSSBridge at:
+If Docker is running on another server, use that server's hostname or IP
+address instead.
 
-```text
-http://rssbridge/
-```
+5. Complete the FreshRSS installer.
 
-To stop RSSBridge while leaving FreshRSS running:
+Recommended for a simple single-server setup:
 
-```bash
-docker compose stop rssbridge
-```
+- Database: SQLite.
+- Username: the same value you put in `FRESHRSS_USER`.
+- Timezone: your preference. The container default is `Asia/Kolkata`.
 
-## FeedFlow connection
+6. Add the bundled Reddit lead feeds.
 
-Complete the FreshRSS web installer and create the account that FeedFlow will
-use. In FreshRSS:
-
-1. Open **Settings > Authentication**.
-2. Enable API access.
-3. Set an API password for the FeedFlow account.
-
-In FeedFlow, add a FreshRSS/Google Reader API account using:
-
-```text
-Server URL: http://invictinefeed.local
-Username:   your FreshRSS username
-Password:   the API password configured in FreshRSS
-```
-
-If FeedFlow runs in another container on the same Docker network, use
-`http://freshrss` instead. Keep port `8080` limited to a trusted LAN, or add an
-authenticated reverse proxy before exposing it publicly.
-
-## Reddit leads feeds
-
-The Reddit lead sources from `deep-research-report.md` are captured in:
-
-- `feeds/reddit-leads.opml` - OPML import file for FreshRSS.
-- `feeds/reddit-leads.yaml` - source-of-truth policy with priorities and custom requirements.
-- `scripts/apply-freshrss-reddit-leads.php` - repeatable live updater for the
-  FreshRSS SQLite database in the LXC.
-
-Import the OPML in FreshRSS from **Subscription management > Import/export**.
-The live updater subscribes FreshRSS to one Reddit multireddit RSS feed covering
-all 19 subreddits from `deep-research-report.md`. Reddit search RSS and many
-back-to-back per-subreddit RSS requests returned `403` / `429` from FreshRSS, so
-the live feed uses one `/new/.rss` request with a browser-like user agent and
-FreshRSS mark-read filters for local buyer-intent filtering.
-The Reddit feed TTL is set to 60 seconds for near-real-time polling. Reddit may
-occasionally return `429` rate-limit responses at this cadence.
-
-The stack also installs a small FreshRSS extension from
-`extensions/RssLeadsStatus`. It adds a Reddit status widget to the FreshRSS nav
-showing time since last refresh, a manual **Refresh Reddit** button, and a toast
-when FreshRSS logs a recent Reddit `429`. The widget reads
-`/rss-leads-status.php`, which is bind-mounted from `freshrss-public/`. The same
-extension also adds a prominent `r/subreddit` badge to Reddit posts in the
-FreshRSS feed and article views by reading each entry's Reddit URL.
-
-## Gemini AI lead filter
-
-Set `GEMINI_API_KEY` in the Compose environment to enable the `ai-filter`
-sidecar. It scans recent Reddit posts, sends compact batches to Gemini, and
-stores a one-sentence summary plus `low`, `medium`, or `high` priority in the
-FreshRSS SQLite database. Priority is based on urgency and money offered.
-
-Optional settings:
-
-```text
-GEMINI_MODEL=gemini-2.5-flash-lite
-GEMINI_MODELS=gemini-2.5-flash-lite,gemini-2.5-flash,gemini-flash-latest
-AI_FILTER_BATCH_SIZE=8
-AI_FILTER_CONTENT_CHARS=900
-AI_FILTER_INTERVAL_SECONDS=300
-AI_FILTER_LOOKBACK_DAYS=14
-```
-
-The FreshRSS extension reads `/rss-leads-ai.php` and displays the AI summary in
-expanded article headers. Classified feed items are visually ordered
-high/medium/low in the current view. The worker uses a concise JSON-only prompt
-and batches posts to reduce token usage.
-
-The updater creates two FreshRSS subscriptions to the same multireddit feed:
-
-- `Reddit Leads - qualified deep-research communities` in the `Reddit Leads`
-  category. Filters mark unqualified posts read, leaving likely leads unread.
-- `Reddit Leads - unqualified deep-research communities` in the
-  `Unqualified Reddit Leads` category. Filters mark likely-qualified posts read,
-  leaving review/noise posts unread in a separate category.
-
-Use `feeds/reddit-leads.yaml` when tuning the subreddit list or filters.
-Thread-based communities such as `r/socialmedia` and `r/SocialMediaMarketing`
-still need manual comment review because the actual leads usually live inside
-the weekly or monthly hiring thread.
-
-To reapply the live feed set inside the FreshRSS container:
+Run this after the FreshRSS account exists:
 
 ```bash
 docker cp scripts/apply-freshrss-reddit-leads.php freshrss:/tmp/apply-freshrss-reddit-leads.php
 docker exec freshrss php /tmp/apply-freshrss-reddit-leads.php
 ```
 
-### Custom filter reference
+You should now see three lead categories in FreshRSS:
 
-These are FreshRSS **mark as read** filters. Matching articles stay in the
-database but are automatically buried as read, so the unread view stays focused
-on people looking to hire.
+- `High Priority`
+- `Reddit Leads`
+- `Unqualified Reddit Leads`
 
-All Reddit feeds also use this fetch user agent to reduce default-bot blocking:
+## Daily Use
+
+Open FreshRSS and read the unread items in `High Priority` first, then continue
+with `Reddit Leads`.
+
+The dashboard is designed so the important bits are visible quickly:
+
+- `high`, `medium`, and `low` badges show lead quality.
+- `not hiring` means the item was judged to be noise or not a buyer.
+- Job-type badges show the kind of work, such as `video editing` or
+  `scriptwriting`.
+- The AI summary gives a one-sentence reason.
+- The Reddit status widget shows when the Reddit feed last refreshed.
+- The AI dashboard shows when the next batch will run, what was processed last,
+  which model was used, request success/failure counts, and recent errors.
+
+The unqualified feed is still useful. It catches false negatives, hiring
+threads, market research, and posts that may become useful later.
+
+## Connect FeedFlow
+
+FreshRSS can act as a Google Reader compatible API server.
+
+In FreshRSS:
+
+1. Open `Settings > Authentication`.
+2. Enable API access.
+3. Set an API password for the account you want FeedFlow to use.
+
+In FeedFlow, add a FreshRSS or Google Reader API account:
 
 ```text
-Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:126.0) Gecko/20100101 Firefox/126.0
+Server URL: http://your-freshrss-server
+Username:   your FreshRSS username
+Password:   the FreshRSS API password
 ```
 
-| Feed | Filter | What it does |
+If FeedFlow runs in another container on the same Docker network, the server URL
+can be:
+
+```text
+http://freshrss
+```
+
+## Optional RSSBridge
+
+RSSBridge is included but disabled by default. Enable it when you want to create
+feeds for websites that do not publish RSS.
+
+```bash
+docker compose --profile rssbridge up -d
+```
+
+RSSBridge will be available on port `8081`:
+
+```text
+http://localhost:8081
+```
+
+FreshRSS can reach it inside Docker at:
+
+```text
+http://rssbridge/
+```
+
+Stop only RSSBridge:
+
+```bash
+docker compose stop rssbridge
+```
+
+## Configuration
+
+The most common settings go in `.env`.
+
+| Setting | Default | What it does |
 |---|---|---|
-| `r/forhire` | `intitle:/\[for hire\]/i OR intitle:"hire me" OR intitle:portfolio` | Marks freelancer offer, hire-me, and portfolio posts as read. |
-| `r/forhire` | `!intitle:/\[hiring\]/i !intitle:hiring` | Marks posts as read if the title does not contain `[HIRING]` or `hiring`. |
-| `r/FindVideoEditors` | `intitle:/\[for hire\]/i OR intitle:unpaid OR intitle:volunteer OR intitle:free` | Marks editor offers and unpaid/free/volunteer requests as read. |
-| `r/FindVideoEditors` | `!intitle:/\[hiring\]/i !intitle:/\[paid\]/i !intitle:hiring !intitle:paid` | Marks posts as read unless the title shows hiring or paid intent. |
-| `r/VideoEditingJobs` | `intitle:/\[for hire\]/i OR intitle:unpaid OR intitle:volunteer OR intitle:free` | Marks editor offers and unpaid/free/volunteer requests as read. |
-| `r/VideoEditingJobs` | `!intitle:/\[hiring\]/i !intitle:/\[paid\]/i !intitle:hiring !intitle:paid` | Marks posts as read unless the title shows hiring or paid intent. |
-| `r/videography` | `intitle:unpaid OR intitle:volunteer OR intitle:exposure OR intitle:free` | Marks unpaid, volunteer, exposure-only, and free-work posts as read. |
-| `r/videography` | `!intitle:/\[hiring\]/i !intitle:hiring` | Marks posts as read if the title does not contain `[HIRING]` or `hiring`. |
-| `r/socialmedia` | `intitle:"self promotion" OR intitle:"for hire" OR intitle:advertisement` | Marks self-promo, for-hire, and advertisement threads as read. |
-| `r/socialmedia` | `!intitle:"Weekly Hiring Thread" !intitle:"Social Media Professionals"` | Marks posts as read unless they are the weekly hiring thread. |
-| `r/SocialMediaMarketing` | `intitle:"self promotion" OR intitle:advertisement OR intitle:"for hire"` | Marks self-promo, advertisement, and for-hire threads as read. |
-| `r/SocialMediaMarketing` | `!intitle:"Monthly Hiring Thread" !intitle:"Hiring Thread"` | Marks posts as read unless they are a monthly/social-media hiring thread. |
-| `r/n8n` | `intitle:"how do I sell" OR intitle:"looking for clients" OR intitle:"for hire"` | Marks seller-side prospecting and for-hire posts as read. |
-| `r/n8n` | `!intitle:hiring !intitle:developer !intitle:automation !intitle:cofounder` | Marks posts as read unless they look like hiring, developer, automation, or cofounder opportunities. |
-| `r/jobbit` | `intitle:/\[for hire\]/i OR intitle:"For Hire only" OR intitle:"hire me"` | Marks for-hire, hire-me, and for-hire megathread posts as read. |
-| `r/jobbit` | `!intitle:/\[hiring\]/i !intitle:hiring` | Marks posts as read if the title does not contain `[HIRING]` or `hiring`. |
-| `r/VideoEditors` | `intitle:/\[for hire\]/i OR intitle:unpaid OR intitle:volunteer OR intitle:free` | Marks editor offers and unpaid/free/volunteer requests as read. |
-| `r/VideoEditors` | `!intitle:/\[hiring\]/i !intitle:hiring` | Marks posts as read if the title does not contain `[HIRING]` or `hiring`. |
-| `r/creators` | `intitle:/\[for hire\]/i OR intitle:unpaid OR intitle:volunteer OR intitle:free` | Marks creator-service offers and unpaid/free/volunteer posts as read. |
-| `r/creators` | `!intitle:hiring !intitle:paid !intitle:editor !intitle:"social media"` | Marks posts as read unless they mention hiring, paid work, editor needs, or social media needs. |
-| `r/HireaWriter` | `intitle:/\[hire me\]/i OR intitle:/\[for hire\]/i` | Marks writer offer posts as read. |
-| `r/HireaWriter` | `!intitle:/\[hiring\]/i !intitle:hiring` | Marks posts as read if the title does not contain `[HIRING]` or `hiring`. |
-| `r/podcasting` | `intitle:/\[for hire\]/i OR intitle:unpaid OR intitle:volunteer OR intitle:free` | Marks podcast-service offers and unpaid/free/volunteer posts as read. |
-| `r/podcasting` | `!intitle:hiring !intitle:"podcast editor" !intitle:paid` | Marks posts as read unless they mention hiring, podcast editor needs, or paid work. |
+| `FRESHRSS_USER` | `invictine` | FreshRSS account name used by the stack scripts and AI worker. |
+| `GEMINI_API_KEY` | empty | Enables AI summaries and priority labels. Leave empty to run without AI. |
+| `AI_FILTER_INTERVAL_SECONDS` | `180` | How often the AI worker checks for more work. |
+| `AI_FILTER_LOOKBACK_DAYS` | `14` | How far back the AI worker looks for recent posts. |
+| `AI_GEMMA_MODEL` | `gemma4-31b` | First-pass model alias. |
+| `AI_REFINE_MODELS` | `gemini-3.1-flash-lite,gemini-3-flash` | Refinement model order. |
+| `AI_GEMMA_FIRST_PASS_BATCH_SIZE` | `1` | Gemma first-pass items per request. Kept at 1 by design. |
+| `AI_GEMMA_FIRST_PASS_REQUESTS_PER_RUN` | `3` | Gemma first-pass requests attempted each worker run. |
+| `AI_FLASH_LITE_REFINE_BATCH_SIZE` | `4` | Refinement items per Flash Lite request. |
+| `AI_MODEL_DAILY_LIMITS` | `gemini-3.1-flash-lite=500,gemini-3-flash=20,gemma4-31b=1500` | Local per-model request caps. |
+| `AI_FILTER_DAILY_REQUEST_BUDGET` | `0` | Optional global daily cap. `0` means track requests but do not enforce a global cap. |
+| `AI_JOB_TYPE_OPTION_LIMIT` | `25` | Maximum learned job-type labels shown to the AI as reusable options. |
 
-## Verify
+## Reddit Sources
 
-Check container state:
+The current subreddit list and feed policy live in
+[feeds/reddit-leads.yaml](feeds/reddit-leads.yaml).
+
+The included sources focus on:
+
+- freelance hiring boards
+- video editing and creator work
+- social media hiring threads
+- automation and AI workflow demand
+- low-budget task boards
+- market-research communities
+
+You can also import [feeds/reddit-leads.opml](feeds/reddit-leads.opml) manually
+from `Subscription management > Import/export` in FreshRSS, but the setup script
+is preferred because it also installs the qualified/unqualified filters. The AI
+worker keeps the `High Priority` category synced after items are classified.
+
+Thread-based communities still need human review. In places like social media
+hiring threads, the useful lead often lives inside the comments, not only in the
+RSS article title.
+
+## Project Structure
+
+| Path | Purpose |
+|---|---|
+| [docker-compose.yml](docker-compose.yml) | FreshRSS, AI worker, and optional RSSBridge services. |
+| [feeds/reddit-leads.yaml](feeds/reddit-leads.yaml) | Human-readable source list and feed policy. |
+| [feeds/reddit-leads.opml](feeds/reddit-leads.opml) | Manual FreshRSS import file. |
+| [scripts/apply-freshrss-reddit-leads.php](scripts/apply-freshrss-reddit-leads.php) | Installs or updates the bundled Reddit feeds and filters. |
+| [scripts/gemini-ai-filter.php](scripts/gemini-ai-filter.php) | AI summary, priority, model-limit, and routing worker. |
+| [extensions/RssLeadsStatus](extensions/RssLeadsStatus) | FreshRSS UI extension for Reddit status, badges, and AI dashboard. |
+| [freshrss-public](freshrss-public) | Small JSON endpoints used by the FreshRSS extension. |
+| [deep-research-report.md](deep-research-report.md) | Original research notes behind the first Reddit source list. |
+
+## Check That It Is Working
+
+Check running containers:
 
 ```bash
 docker compose ps
 ```
 
-Check FreshRSS locally:
+Check FreshRSS:
 
 ```bash
 curl -I http://127.0.0.1
 ```
 
-If RSSBridge is enabled:
+Check AI worker logs:
 
 ```bash
-curl -I http://127.0.0.1:8081
+docker compose logs --tail=100 ai-filter
 ```
 
-Inspect logs:
+Check FreshRSS logs:
 
 ```bash
 docker compose logs --tail=100 freshrss
-docker compose --profile rssbridge logs --tail=100 rssbridge
 ```
 
-Validate the Compose file without starting containers:
+Validate the Compose file:
 
 ```bash
 docker compose config
 docker compose --profile rssbridge config
 ```
 
-## Stop the stack
+## Troubleshooting
+
+### FreshRSS opens, but no Reddit lead categories appear
+
+Run the feed setup script after completing the FreshRSS installer:
 
 ```bash
-docker compose --profile rssbridge down
+docker cp scripts/apply-freshrss-reddit-leads.php freshrss:/tmp/apply-freshrss-reddit-leads.php
+docker exec freshrss php /tmp/apply-freshrss-reddit-leads.php
 ```
 
-Named volumes are preserved by `down`. Do not add `--volumes` unless the
-FreshRSS data is intentionally being removed.
+Make sure `FRESHRSS_USER` matches the FreshRSS account name.
+
+### AI summaries do not appear
+
+Check these first:
+
+- `GEMINI_API_KEY` is set.
+- `FRESHRSS_USER` matches your FreshRSS account.
+- The `ai-filter` container is running.
+- The AI dashboard in FreshRSS does not show quota/backoff errors.
+
+Useful command:
+
+```bash
+docker compose logs --tail=100 ai-filter
+```
+
+### Reddit refreshes are slow or show rate limits
+
+Reddit may return `429` responses when it sees frequent automated fetches. The
+stack reduces this by using one combined RSS feed, but rate limits can still
+happen. Wait a few minutes, reduce refresh frequency, or refresh manually less
+often.
+
+### The AI dashboard shows old errors
+
+The dashboard keeps recent errors so you can debug past failures. If the current
+status is `success` and new summaries are appearing, old entries are usually just
+history.
+
+## Updating
+
+Pull the latest code and recreate the containers:
+
+```bash
+git pull
+docker compose up -d
+```
+
+Reapply the Reddit feed setup if the source list or filters changed:
+
+```bash
+docker cp scripts/apply-freshrss-reddit-leads.php freshrss:/tmp/apply-freshrss-reddit-leads.php
+docker exec freshrss php /tmp/apply-freshrss-reddit-leads.php
+```
+
+## Stopping
+
+Stop containers but keep data:
+
+```bash
+docker compose down
+```
+
+Docker named volumes keep FreshRSS data. Do not run `docker compose down
+--volumes` unless you intentionally want to remove the FreshRSS database and
+settings.
+
+## Privacy and Security
+
+- Do not commit your `.env` file or Gemini API key.
+- If AI is enabled, Reddit post titles and compact post text are sent to the
+  configured Google Gemini/Gemma models.
+- FreshRSS is exposed on port `80` by default. Put it behind a trusted network,
+  VPN, or authenticated reverse proxy before exposing it to the public internet.
+- FreshRSS data is stored in Docker named volumes on the host.
+
+## License
+
+No license file is included yet. Before publishing this as an open source
+project, add a `LICENSE` file that matches how you want others to use it.
