@@ -77,19 +77,28 @@
 		return value.slice(0, Math.max(0, maxLength - 3)).trim() + '...';
 	}
 
-	function showToast(message, detail) {
+	function showToast(message, detail, tone) {
 		var toast = document.getElementById('rss-leads-toast');
 		if (!toast) {
 			toast = document.createElement('div');
 			toast.id = 'rss-leads-toast';
+			toast.setAttribute('role', 'status');
+			toast.setAttribute('aria-live', 'polite');
 			document.body.appendChild(toast);
 		}
-		toast.innerHTML = '<strong>' + message + '</strong><span>' + detail + '</span>';
+		toast.className = 'rss-leads-toast-' + (tone || 'info');
+		clearNode(toast);
+		var title = document.createElement('strong');
+		title.textContent = message;
+		var body = document.createElement('span');
+		body.textContent = detail;
+		toast.appendChild(title);
+		toast.appendChild(body);
 		toast.hidden = false;
 		window.clearTimeout(toast._rssLeadsTimeout);
 		toast._rssLeadsTimeout = window.setTimeout(function () {
 			toast.hidden = true;
-		}, 10000);
+		}, 6500);
 	}
 
 	function updateTimer() {
@@ -112,7 +121,7 @@
 			var current = String(data.latest_429_ts);
 			if (previous !== current) {
 				window.localStorage.setItem(key, current);
-				showToast('Reddit rate limit hit', 'FreshRSS received HTTP 429 while refreshing the Reddit leads feed.');
+				showToast('Reddit rate limit hit', 'FreshRSS received HTTP 429 while refreshing the Reddit leads feed.', 'warning');
 			}
 		}
 	}
@@ -135,7 +144,7 @@
 		try {
 			window.localStorage.setItem(cvProfileStorageKey, String(value || '').trim());
 		} catch (error) {
-			showToast('CV profile not saved', 'Browser storage is unavailable for this FreshRSS page.');
+			showToast('CV profile not saved', 'Browser storage is unavailable for this FreshRSS page.', 'error');
 			return false;
 		}
 		updateCvProfileButton();
@@ -156,57 +165,97 @@
 			return;
 		}
 		clearNode(cvProfilePanel);
+		var savedProfile = getSavedCvProfile();
 
 		var header = document.createElement('div');
 		header.className = 'rss-leads-cv-panel-header';
+		var titleBlock = document.createElement('div');
+		titleBlock.className = 'rss-leads-cv-title-block';
 		var title = document.createElement('strong');
 		title.textContent = 'CV profile';
+		var status = document.createElement('span');
+		status.className = 'rss-leads-cv-status';
+		titleBlock.appendChild(title);
+		titleBlock.appendChild(status);
 		var close = document.createElement('button');
 		close.type = 'button';
+		close.className = 'rss-leads-cv-close';
 		close.textContent = 'Close';
 		close.addEventListener('click', function () {
 			cvProfilePanel.hidden = true;
 		});
-		header.appendChild(title);
+		header.appendChild(titleBlock);
 		header.appendChild(close);
+
+		var body = document.createElement('div');
+		body.className = 'rss-leads-cv-body';
 
 		var label = document.createElement('label');
 		label.className = 'rss-leads-cv-label';
 		label.htmlFor = 'rss-leads-cv-profile-text';
-		label.textContent = 'Work experience / CV profile';
+		label.textContent = 'Work profile';
 
 		cvProfileTextarea = document.createElement('textarea');
 		cvProfileTextarea.id = 'rss-leads-cv-profile-text';
-		cvProfileTextarea.value = getSavedCvProfile();
-		cvProfileTextarea.placeholder = 'Your role, services, proof points, niches, tools, portfolio links, and preferred tone.';
+		cvProfileTextarea.value = savedProfile;
+		cvProfileTextarea.placeholder = 'Role, services, proof points, niches, tools, portfolio links, and preferred tone.';
+
+		var meta = document.createElement('div');
+		meta.className = 'rss-leads-cv-meta';
+		var counter = document.createElement('span');
+		counter.className = 'rss-leads-cv-counter';
+		meta.appendChild(counter);
 
 		var actions = document.createElement('div');
 		actions.className = 'rss-leads-cv-actions';
 		var save = document.createElement('button');
 		save.type = 'button';
-		save.className = 'btn';
-		save.textContent = 'Save';
+		save.className = 'btn rss-leads-cv-save';
+		save.textContent = 'Save profile';
 		save.addEventListener('click', function () {
 			if (saveCvProfile(cvProfileTextarea.value)) {
 				cvProfilePanel.hidden = true;
-				showToast('CV profile saved', 'Quick apply will use this profile for future ChatGPT prompts.');
+				showToast('CV profile saved', 'Quick apply will use this profile for future ChatGPT prompts.', 'success');
 			}
 		});
 		var clear = document.createElement('button');
 		clear.type = 'button';
-		clear.className = 'btn';
+		clear.className = 'btn rss-leads-cv-clear';
 		clear.textContent = 'Clear';
 		clear.addEventListener('click', function () {
 			cvProfileTextarea.value = '';
 			saveCvProfile('');
+			savedProfile = '';
+			updateEditorState();
 		});
+
+		function updateEditorState() {
+			var value = String(cvProfileTextarea.value || '');
+			var trimmed = value.trim();
+			counter.textContent = String(value.length) + ' chars';
+			if (trimmed !== savedProfile) {
+				status.className = 'rss-leads-cv-status rss-leads-cv-status-unsaved';
+				status.textContent = 'Unsaved';
+			} else if (trimmed) {
+				status.className = 'rss-leads-cv-status rss-leads-cv-status-saved';
+				status.textContent = 'Saved';
+			} else {
+				status.className = 'rss-leads-cv-status rss-leads-cv-status-empty';
+				status.textContent = 'Empty';
+			}
+		}
+		cvProfileTextarea.addEventListener('input', updateEditorState);
+		updateEditorState();
+
 		actions.appendChild(clear);
 		actions.appendChild(save);
 
 		cvProfilePanel.appendChild(header);
-		cvProfilePanel.appendChild(label);
-		cvProfilePanel.appendChild(cvProfileTextarea);
-		cvProfilePanel.appendChild(actions);
+		body.appendChild(label);
+		body.appendChild(cvProfileTextarea);
+		body.appendChild(meta);
+		body.appendChild(actions);
+		cvProfilePanel.appendChild(body);
 	}
 
 	function openCvProfilePanel() {
@@ -236,6 +285,139 @@
 		item.appendChild(labelNode);
 		item.appendChild(valueNode);
 		parent.appendChild(item);
+	}
+
+	function appendMiniBar(parent, label, value, total, extraClass) {
+		var row = document.createElement('div');
+		row.className = 'rss-leads-ai-mini-bar' + (extraClass ? ' ' + extraClass : '');
+		var top = document.createElement('div');
+		var name = document.createElement('span');
+		name.textContent = label;
+		var count = document.createElement('strong');
+		count.textContent = String(value || 0);
+		var track = document.createElement('div');
+		var fill = document.createElement('span');
+		fill.style.width = Math.max(2, Math.min(100, total > 0 ? Math.round((Number(value || 0) / total) * 100) : 0)) + '%';
+		top.appendChild(name);
+		top.appendChild(count);
+		track.appendChild(fill);
+		row.appendChild(top);
+		row.appendChild(track);
+		parent.appendChild(row);
+	}
+
+	function appendAnalyticsSection(parent, analytics, benchmark) {
+		if (!analytics) {
+			return;
+		}
+		var section = document.createElement('div');
+		section.className = 'rss-leads-ai-analytics';
+
+		var title = document.createElement('h3');
+		title.textContent = 'Output analytics';
+		section.appendChild(title);
+
+		var stats = document.createElement('div');
+		stats.className = 'rss-leads-ai-metrics rss-leads-ai-analytics-metrics';
+		appendMetric(stats, 'Classified 24h', String(analytics.updated_last_24h || 0));
+		appendMetric(stats, 'Classified 7d', String(analytics.updated_last_7d || 0));
+		appendMetric(stats, 'Unread classified', String(analytics.unread_classified || 0));
+		appendMetric(stats, 'Avg scam', String(analytics.avg_scam_likelihood || 0) + '%');
+		section.appendChild(stats);
+
+		var distribution = document.createElement('div');
+		distribution.className = 'rss-leads-ai-distribution';
+		var scamBuckets = analytics.scam_buckets || {};
+		var scamTotal = Object.keys(scamBuckets).reduce(function (sum, bucket) {
+			return sum + Number(scamBuckets[bucket] || 0);
+		}, 0);
+		var scamTitle = document.createElement('strong');
+		scamTitle.textContent = 'Scam risk distribution';
+		distribution.appendChild(scamTitle);
+		['0', '1-24', '25-49', '50-74', '75-100'].forEach(function (bucket) {
+			appendMiniBar(distribution, bucket + '%', scamBuckets[bucket] || 0, scamTotal, 'rss-leads-ai-mini-bar-scam');
+		});
+		section.appendChild(distribution);
+
+		var modelCounts = analytics.model_counts || {};
+		var modelNames = Object.keys(modelCounts);
+		if (modelNames.length) {
+			var models = document.createElement('div');
+			models.className = 'rss-leads-ai-distribution';
+			var modelTitle = document.createElement('strong');
+			modelTitle.textContent = 'Model mix';
+			models.appendChild(modelTitle);
+			var modelTotal = modelNames.reduce(function (sum, model) {
+				return sum + Number(modelCounts[model] || 0);
+			}, 0);
+			modelNames.forEach(function (model) {
+				appendMiniBar(models, model, modelCounts[model] || 0, modelTotal, '');
+			});
+			section.appendChild(models);
+		}
+
+		if (benchmark && (benchmark.models || []).length) {
+			var bench = document.createElement('div');
+			bench.className = 'rss-leads-ai-benchmark';
+			var benchTitle = document.createElement('strong');
+			benchTitle.textContent = 'Benchmark';
+			var benchMeta = document.createElement('small');
+			var highIntelligence = benchmark.high_intelligence_cli ? 'CLI' : (benchmark.high_intelligence_model || benchmark.high_intelligence_agent || benchmark.judge_model || benchmark.judge_agent || 'unknown');
+			var highProvider = benchmark.high_intelligence_provider ? ' via ' + benchmark.high_intelligence_provider : '';
+			benchMeta.textContent = 'Sample ' + String(benchmark.sample_size || 0) + ' - high intelligence ' + highIntelligence + highProvider + ' - ' + formatTime(benchmark.generated_at);
+			bench.appendChild(benchTitle);
+			bench.appendChild(benchMeta);
+			(benchmark.models || []).forEach(function (row) {
+				var item = document.createElement('div');
+				item.className = 'rss-leads-ai-benchmark-row';
+				var model = document.createElement('span');
+				model.textContent = row.model;
+				var quality = document.createElement('strong');
+				quality.textContent = 'Q ' + String(row.avg_quality || 0) + '/10';
+				var speed = document.createElement('span');
+				speed.textContent = String(row.avg_latency_ms || 0) + 'ms'
+					+ (row.judge_model_used ? ' - judge ' + String(row.judge_model_used) : '')
+					+ (row.judge_status && !row.avg_quality ? ' - status ' + String(row.judge_status) : '');
+				item.appendChild(model);
+				item.appendChild(quality);
+				item.appendChild(speed);
+				bench.appendChild(item);
+				if (row.notes) {
+					var note = document.createElement('small');
+					note.textContent = row.notes;
+					bench.appendChild(note);
+				}
+			});
+			section.appendChild(bench);
+		}
+
+		var recent = analytics.recent || [];
+		if (recent.length) {
+			var recentWrap = document.createElement('div');
+			recentWrap.className = 'rss-leads-ai-recent-output';
+			var recentTitle = document.createElement('strong');
+			recentTitle.textContent = 'Recent output';
+			recentWrap.appendChild(recentTitle);
+			recent.slice(0, 8).forEach(function (item) {
+				var row = document.createElement('div');
+				row.className = 'rss-leads-ai-recent-row';
+				var top = document.createElement('div');
+				var name = document.createElement('span');
+				name.textContent = shortText(item.title || item.link || 'Untitled', 'Untitled');
+				var meta = document.createElement('small');
+				meta.textContent = [priorityLabel(String(item.priority || '').toLowerCase()), item.job_type, 'Scam ' + String(item.scam_likelihood || 0) + '%', item.model].filter(Boolean).join(' - ');
+				var summary = document.createElement('p');
+				summary.textContent = item.summary || '';
+				top.appendChild(name);
+				top.appendChild(meta);
+				row.appendChild(top);
+				row.appendChild(summary);
+				recentWrap.appendChild(row);
+			});
+			section.appendChild(recentWrap);
+		}
+
+		parent.appendChild(section);
 	}
 
 	function appendProgress(parent, label, used, limit) {
@@ -430,6 +612,8 @@
 			aiStatusPanel.appendChild(jobTypeWrap);
 		}
 
+		appendAnalyticsSection(aiStatusPanel, latestAiStatus.analytics, latestAiStatus.benchmark);
+
 		if (state.quota_backoff_until) {
 			var backoff = document.createElement('p');
 			backoff.className = 'rss-leads-ai-panel-message';
@@ -466,12 +650,16 @@
 			var latestText = document.createElement('p');
 			var latestAmount = monthlyAmountLabel(latest);
 			var latestJobType = jobTypeLabel(latest);
+			var latestScamLikelihood = scamLikelihood(latest);
 			var latestLabels = [priorityLabel(String(latest.priority || '').toLowerCase())];
 			if (latestJobType) {
 				latestLabels.push(latestJobType);
 			}
 			if (latestAmount) {
 				latestLabels.push(latestAmount);
+			}
+			if (latestScamLikelihood !== null) {
+				latestLabels.push('Scam ' + latestScamLikelihood + '%');
 			}
 			latestText.textContent = latestLabels.join(' - ') + ': ' + latest.summary;
 			var latestMeta = document.createElement('small');
@@ -566,7 +754,7 @@
 			})
 			.catch(function () {
 				refreshButton.disabled = false;
-				showToast('Manual refresh failed', 'FreshRSS could not start the Reddit feed refresh.');
+				showToast('Manual refresh failed', 'FreshRSS could not start the Reddit feed refresh.', 'error');
 				pollStatus();
 			});
 	}
@@ -648,6 +836,17 @@
 		return badge;
 	}
 
+	function ensureCompactMeta(compactTarget) {
+		var meta = compactTarget.querySelector('.rss-leads-title-meta');
+		if (!meta) {
+			meta = document.createElement('div');
+			meta.className = 'rss-leads-title-meta';
+			var compactLine = compactTarget.querySelector('.rss-leads-ai-compact');
+			compactTarget.insertBefore(meta, compactLine || null);
+		}
+		return meta;
+	}
+
 	function annotateFeedEntry(entry) {
 		if (entry.querySelector('.rss-leads-subreddit-badge')) {
 			return;
@@ -664,10 +863,7 @@
 
 		var compactTarget = entry.querySelector('.flux_header .titleAuthorSummaryDate');
 		if (compactTarget) {
-			var compactTitle = compactTarget.querySelector('a.title');
-			if (compactTitle) {
-				compactTitle.insertBefore(createCompactSubredditBadge(subreddit), compactTitle.firstChild);
-			}
+			ensureCompactMeta(compactTarget).appendChild(createCompactSubredditBadge(subreddit));
 		}
 
 		var expandedTitle = entry.querySelector('.flux_content .content > header h1.title');
@@ -744,6 +940,42 @@
 
 	function jobTypeLabel(result) {
 		return String(result && result.job_type || '').trim();
+	}
+
+	function scamLikelihood(result) {
+		var value = Number(result && result.scam_likelihood);
+		if (!isFinite(value)) {
+			return null;
+		}
+		value = Math.round(value);
+		if (value < 0) {
+			return 0;
+		}
+		if (value > 100) {
+			return 100;
+		}
+		return value;
+	}
+
+	function scamLikelihoodTone(score) {
+		if (score >= 70) {
+			return 'high';
+		}
+		if (score >= 35) {
+			return 'medium';
+		}
+		return 'low';
+	}
+
+	function createScamBadge(score) {
+		var badge = document.createElement('span');
+		var tone = scamLikelihoodTone(score);
+		var cut = Math.max(0, Math.min(100, 100 - score));
+		badge.className = 'rss-leads-ai-scam rss-leads-ai-scam-' + tone;
+		badge.textContent = 'Scam ' + score + '%';
+		badge.title = 'LLM-estimated scam likelihood: ' + score + '%';
+		badge.style.backgroundImage = 'linear-gradient(90deg, #052e16 0%, #064e3b ' + cut + '%, #7f1d1d ' + cut + '%, #b91c1c 100%)';
+		return badge;
 	}
 
 	function applyBadgeColors(element, colors) {
@@ -842,6 +1074,7 @@
 		var jobType = String(root.getAttribute && root.getAttribute('data-ai-job-type') || '').trim() ||
 			firstText(root, ['.rss-leads-ai-card .rss-leads-ai-job-type', '.flux_header .rss-leads-ai-job-type']);
 		var budget = firstText(root, ['.rss-leads-ai-card .rss-leads-ai-monthly', '.flux_header .rss-leads-ai-monthly']);
+		var scamRisk = firstText(root, ['.rss-leads-ai-card .rss-leads-ai-scam', '.flux_header .rss-leads-ai-scam']);
 		var author = firstText(root, ['.author', '.flux_header .item.website', '.flux_header .website']);
 
 		return {
@@ -853,6 +1086,7 @@
 			aiSummary: limitText(aiSummary, 500),
 			jobType: limitText(jobType, 120),
 			budget: limitText(budget, 120),
+			scamRisk: limitText(scamRisk, 80),
 			content: limitText(articleText(root), 1800)
 		};
 	}
@@ -881,6 +1115,7 @@
 			lead.priority ? 'AI priority: ' + lead.priority : '',
 			lead.jobType ? 'Job type: ' + lead.jobType : '',
 			lead.budget ? 'Budget: ' + lead.budget : '',
+			lead.scamRisk ? 'Scam likelihood: ' + lead.scamRisk : '',
 			lead.aiSummary ? 'AI summary: ' + lead.aiSummary : '',
 			lead.link ? 'URL: ' + lead.link : '',
 			lead.content ? 'Post text: ' + lead.content : ''
@@ -902,7 +1137,7 @@
 	function openQuickApplyPrompt(root) {
 		if (!getSavedCvProfile()) {
 			openCvProfilePanel();
-			showToast('Add CV profile first', 'Save your work experience once, then Quick apply can create ChatGPT prompts.');
+			showToast('Add CV profile first', 'Save your work experience once, then Quick apply can create ChatGPT prompts.', 'warning');
 			return;
 		}
 		var prompt = buildQuickApplyPrompt(root);
@@ -915,9 +1150,9 @@
 			} catch (error) {
 				// Some browsers restrict access immediately after opening a new tab.
 			}
-			showToast('ChatGPT opened', 'A quick-apply DM prompt was sent to ChatGPT.');
+			showToast('ChatGPT opened', 'A quick-apply DM prompt was sent to ChatGPT.', 'success');
 		} else {
-			showToast('ChatGPT popup blocked', 'Allow popups for FreshRSS, then click Quick apply again.');
+			showToast('ChatGPT popup blocked', 'Allow popups for FreshRSS, then click Quick apply again.', 'error');
 		}
 	}
 
@@ -982,6 +1217,10 @@
 
 		var compactTarget = entry.querySelector('.flux_header .titleAuthorSummaryDate');
 		if (compactTarget) {
+			var compactMeta = ensureCompactMeta(compactTarget);
+			Array.prototype.forEach.call(compactMeta.querySelectorAll('.rss-leads-ai-job-type, .rss-leads-ai-monthly, .rss-leads-ai-scam'), function (node) {
+				node.remove();
+			});
 			var compactLine = compactTarget.querySelector('.rss-leads-ai-compact');
 			if (!compactLine) {
 				compactLine = document.createElement('div');
@@ -991,17 +1230,21 @@
 			compactLine.innerHTML = '';
 			var amount = monthlyAmountLabel(result);
 			var compactJobTypeLabel = jobTypeLabel(result);
+			var compactScamLikelihood = scamLikelihood(result);
 			if (compactJobTypeLabel) {
 				var compactJobType = document.createElement('span');
 				compactJobType.className = 'rss-leads-ai-job-type';
 				compactJobType.textContent = compactJobTypeLabel;
-				compactLine.appendChild(compactJobType);
+				compactMeta.appendChild(compactJobType);
 			}
 			if (amount) {
 				var compactAmount = document.createElement('span');
 				compactAmount.className = 'rss-leads-ai-monthly';
 				compactAmount.textContent = amount;
-				compactLine.appendChild(compactAmount);
+				compactMeta.appendChild(compactAmount);
+			}
+			if (compactScamLikelihood !== null) {
+				compactMeta.appendChild(createScamBadge(compactScamLikelihood));
 			}
 			if (priority === 'high' && result.summary) {
 				var compactSummary = document.createElement('span');
@@ -1012,19 +1255,19 @@
 
 			var compactTitle = compactTarget.querySelector('a.title');
 			if (compactTitle) {
-				var inlineAi = compactTitle.querySelector('.rss-leads-ai-inline');
+				var inlineAi = compactMeta.querySelector('.rss-leads-ai-inline');
 				if (!inlineAi) {
 					inlineAi = document.createElement('span');
 					inlineAi.className = 'rss-leads-ai-inline';
-					compactTitle.insertBefore(inlineAi, compactTitle.firstChild);
+					compactMeta.insertBefore(inlineAi, compactMeta.firstChild);
 				}
 				inlineAi.className = 'rss-leads-ai-inline rss-leads-ai-inline-' + priority;
 				inlineAi.textContent = priorityLabel(priority);
 				applyBadgeColors(inlineAi, priorityColor(priority));
 
-				var subredditBadge = compactTitle.querySelector('.rss-leads-compact-badge');
+				var subredditBadge = compactMeta.querySelector('.rss-leads-compact-badge');
 				if (subredditBadge && inlineAi.nextSibling !== subredditBadge) {
-					compactTitle.insertBefore(subredditBadge, inlineAi.nextSibling);
+					compactMeta.insertBefore(subredditBadge, inlineAi.nextSibling);
 				}
 			}
 		}
@@ -1052,6 +1295,7 @@
 
 		var amountLabel = monthlyAmountLabel(result);
 		var jobType = jobTypeLabel(result);
+		var scamScore = scamLikelihood(result);
 		var summary = document.createElement('span');
 		summary.className = 'rss-leads-ai-summary';
 		summary.textContent = result.summary || '';
@@ -1068,6 +1312,9 @@
 			amountBadge.className = 'rss-leads-ai-monthly';
 			amountBadge.textContent = amountLabel;
 			card.appendChild(amountBadge);
+		}
+		if (scamScore !== null) {
+			card.appendChild(createScamBadge(scamScore));
 		}
 		card.appendChild(summary);
 	}

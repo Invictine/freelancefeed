@@ -258,6 +258,59 @@ The most common settings go in `.env`.
 | `AI_MODEL_DAILY_LIMITS` | `gemini-3.1-flash-lite=500,gemini-3-flash=20,gemma4-31b=1500` | Local per-model request caps. |
 | `AI_FILTER_DAILY_REQUEST_BUDGET` | `0` | Optional global daily cap. `0` means track requests but do not enforce a global cap. |
 | `AI_JOB_TYPE_OPTION_LIMIT` | `25` | Maximum learned job-type labels shown to the AI as reusable options. |
+| `AI_BENCHMARK_LOW_INTELLIGENCE_MODELS` | `gemma4-31b,gemini-3.1-flash-lite,gemini-3-flash` | Comma-separated candidate models compared by the benchmark runner. |
+| `AI_BENCHMARK_SAMPLE_SIZE` | `8` | Number of recent Reddit lead entries used in a benchmark run. |
+| `AI_BENCHMARK_HIGH_INTELLIGENCE_API_KEY` | falls back to `GEMINI_API_KEY` | API key used by the high-intelligence quality judge. |
+| `AI_BENCHMARK_HIGH_INTELLIGENCE_MODEL` | `gemini-3.1-pro-preview` | High-intelligence API model used to judge benchmark output quality. `gemini-3.1-pro` is accepted as an alias. |
+| `AI_BENCHMARK_HIGH_INTELLIGENCE_AGENT` | empty | Optional agent id used instead of `AI_BENCHMARK_HIGH_INTELLIGENCE_MODEL`. |
+| `AI_BENCHMARK_HIGH_INTELLIGENCE_PROVIDER` | `antigravity-sdk` | Quality judge provider. Use `antigravity-sdk` for the bundled SDK wrapper, or set another path through CLI/API settings. |
+| `AI_BENCHMARK_HIGH_INTELLIGENCE_FALLBACK_MODELS` | `gemini-3.5-flash` | Optional fallback models used by the SDK wrapper when the primary high-intelligence model is unavailable or quota-limited. |
+| `AI_BENCHMARK_HIGH_INTELLIGENCE_SDK` | `1` | Enables the bundled Google Antigravity SDK judge wrapper. |
+| `AI_BENCHMARK_HIGH_INTELLIGENCE_SDK_COMMAND` | auto | Optional override for the Antigravity SDK judge command. |
+| `AI_BENCHMARK_HIGH_INTELLIGENCE_CLI` | empty | Optional CLI command. The benchmark sends the judge prompt on stdin and expects JSON on stdout. |
+
+## AI Benchmark
+
+Run a benchmark when you want to compare classifier quality and speed across
+models. It samples recent Reddit lead entries, calls each low-intelligence
+candidate model, then asks the configured high-intelligence judge to score output
+quality.
+
+```bash
+docker compose exec ai-filter php /opt/rss-leads-stack/scripts/benchmark-ai-models.php
+```
+
+The latest benchmark is saved beside the FreshRSS user data as
+`rss_leads_ai_benchmark.json` and appears in the AI dashboard.
+
+By default the benchmark judges quality through the bundled Google Antigravity
+SDK wrapper. The `ai-filter` image installs the SDK from PyPI because the SDK
+ships a compiled runtime binary in the wheel. The wrapper reads the judge prompt
+from stdin, uses `LocalAgentConfig(model=AI_BENCHMARK_HIGH_INTELLIGENCE_MODEL)`,
+and returns compact JSON scores.
+
+To use the SDK judge explicitly:
+
+```text
+AI_BENCHMARK_HIGH_INTELLIGENCE_PROVIDER=antigravity-sdk
+AI_BENCHMARK_HIGH_INTELLIGENCE_MODEL=gemini-3.1-pro-preview
+AI_BENCHMARK_HIGH_INTELLIGENCE_FALLBACK_MODELS=gemini-3.5-flash
+```
+
+The current API key may need paid Pro quota for `gemini-3.1-pro-preview`. When
+that model is quota-limited, the SDK wrapper falls back to the configured
+fallback list and records the model it actually used in `judge_model_used`.
+
+If you want to use a local high-intelligence CLI judge, set
+`AI_BENCHMARK_HIGH_INTELLIGENCE_CLI` to a command that reads the full judging
+prompt from stdin and writes a JSON object to stdout:
+
+```json
+{"overall_quality":8,"priority_score":8,"summary_score":9,"scam_score":7,"notes":"Short note"}
+```
+
+Set `AI_BENCHMARK_HIGH_INTELLIGENCE_SDK=0` when you want the benchmark to skip
+the SDK wrapper and use the CLI/API paths instead.
 
 ## Reddit Sources
 
@@ -291,6 +344,8 @@ RSS article title.
 | [feeds/reddit-leads.opml](feeds/reddit-leads.opml) | Manual FreshRSS import file. |
 | [scripts/apply-freshrss-reddit-leads.php](scripts/apply-freshrss-reddit-leads.php) | Installs or updates the bundled Reddit feeds and filters. |
 | [scripts/gemini-ai-filter.php](scripts/gemini-ai-filter.php) | AI summary, priority, model-limit, and routing worker. |
+| [scripts/benchmark-ai-models.php](scripts/benchmark-ai-models.php) | Compares model speed and judged output quality for the AI classifier. |
+| [scripts/antigravity-high-intelligence-judge.py](scripts/antigravity-high-intelligence-judge.py) | Google Antigravity SDK wrapper used by the benchmark quality judge. |
 | [extensions/RssLeadsStatus](extensions/RssLeadsStatus) | FreshRSS UI extension for Reddit status, badges, and AI dashboard. |
 | [freshrss-public](freshrss-public) | Small JSON endpoints used by the FreshRSS extension. |
 | [deep-research-report.md](deep-research-report.md) | Original research notes behind the first Reddit source list. |
@@ -405,6 +460,14 @@ settings.
 - FreshRSS is exposed on port `80` by default. Put it behind a trusted network,
   VPN, or authenticated reverse proxy before exposing it to the public internet.
 - FreshRSS data is stored in Docker named volumes on the host.
+
+## Planned Improvements & Roadmap
+
+- **Architecture:** Move background processing from the `while true` loop in the container to a dedicated cron task or queue system for better stability.
+- **State Management:** Implement atomic writes or migrate JSON state tracking entirely into SQLite to prevent file corruption during container restarts.
+- **Code Refactoring:** Break down the monolithic `gemini-ai-filter.php` into smaller, object-oriented classes (e.g., `GeminiClient`, `DatabaseRepository`) for improved maintainability.
+- **AI Integration:** Fully utilize Gemini's native Structured Outputs for JSON responses to remove heuristic parsing.
+- **UI Extension:** Refactor the vanilla JS dashboard (`script.js`) into a lightweight framework like Alpine.js or Preact to reduce DOM manipulation boilerplate.
 
 ## License
 

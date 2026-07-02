@@ -15,9 +15,10 @@ if (!$allowModelFallbacks && !empty($refineModels)) {
 	$refineModels = array_slice($refineModels, 0, 1);
 	$models = array_values(array_unique(array_merge($refineModels, [$gemmaModel])));
 }
-$promptVersion = 'gemma_flash_monthly_job_type_v3';
+$promptVersion = 'gemma_flash_monthly_job_type_scam_v4';
 $batchSize = max(1, min(20, (int)(getenv('AI_FILTER_BATCH_SIZE') ?: 20)));
-$gemmaFirstPassBatchSize = max(1, min(1, (int)(getenv('AI_GEMMA_FIRST_PASS_BATCH_SIZE') ?: 1)));
+$gemmaFirstPassBatchLimit = strpos($gemmaModel, 'gemma-') === 0 ? 1 : 20;
+$gemmaFirstPassBatchSize = max(1, min($gemmaFirstPassBatchLimit, (int)(getenv('AI_GEMMA_FIRST_PASS_BATCH_SIZE') ?: 1)));
 $gemmaFirstPassRequestsPerRun = max(0, min(50, (int)(getenv('AI_GEMMA_FIRST_PASS_REQUESTS_PER_RUN') ?: 3)));
 $flashLiteRefineBatchSize = max(1, min(20, (int)(getenv('AI_FLASH_LITE_REFINE_BATCH_SIZE') ?: 4)));
 $contentChars = max(200, min(2400, (int)(getenv('AI_FILTER_CONTENT_CHARS') ?: 900)));
@@ -436,6 +437,13 @@ function valid_classification_array(array $decoded, array $expectedIds = []): bo
 		if (isset($item['job_type']) && mb_strlen((string)$item['job_type'], 'UTF-8') > 96) {
 			return false;
 		}
+		if (!array_key_exists('scam_likelihood', $item) || !is_numeric($item['scam_likelihood'])) {
+			return false;
+		}
+		$scamLikelihood = (int)$item['scam_likelihood'];
+		if ($scamLikelihood < 0 || $scamLikelihood > 100) {
+			return false;
+		}
 		if (!empty($expected) && !isset($expected[$id])) {
 			return false;
 		}
@@ -602,6 +610,13 @@ function job_type_for_result(array $result, array $group, string $priority): str
 	return $jobType;
 }
 
+function scam_likelihood_for_result(array $result): int {
+	if (!array_key_exists('scam_likelihood', $result) || !is_numeric($result['scam_likelihood'])) {
+		return 0;
+	}
+	return max(0, min(100, (int)round((float)$result['scam_likelihood'])));
+}
+
 function job_type_slug(string $jobType): string {
 	$slug = mb_strtolower($jobType, 'UTF-8');
 	$slug = str_replace('&', ' and ', $slug);
@@ -703,7 +718,7 @@ function retry_delay_seconds(string $raw): ?int {
 }
 
 function classification_system_prompt(array $jobTypeOptions): string {
-	return 'Score Reddit leads. Output JSON array only. Each item: id, summary<=20 words one sentence, monthly_amount, priority low|medium|high|not_hiring, job_type. monthly_amount is only for high priority: estimate monthly USD value like "$3,000/mo" from budget/pay/rate; convert hourly weekly annual or project pay to monthly equivalent when possible; use "unknown" if no money is stated; use "" for non-high. not_hiring=not posted by someone hiring for a role/task/vendor, including freelancer offers, hire-me posts, portfolio/self-promo, selling services, job seekers, general discussion, advice, showcases, news, or spam. For real buyer/hiring posts: high=paid+urgent/budget/ready; medium=paid/no urgency or urgent/no budget; low=unpaid/vague but still wants help/hiring. ' . job_type_prompt_instruction($jobTypeOptions);
+	return 'Score Reddit leads. Output JSON array only. Each item: id, summary<=20 words one sentence, monthly_amount, priority low|medium|high|not_hiring, job_type, scam_likelihood integer 0-100. scam_likelihood is the chance the post is a scam or unsafe lead: high values for unrealistic pay, requests for money, off-platform payment/account access, vague easy-work offers, crypto/check/payment-forwarding, suspicious urgency, or impersonation; low values for specific normal paid work with credible details. monthly_amount is only for high priority: estimate monthly USD value like "$3,000/mo" from budget/pay/rate; convert hourly weekly annual or project pay to monthly equivalent when possible; use "unknown" if no money is stated; use "" for non-high. not_hiring=not posted by someone hiring for a role/task/vendor, including freelancer offers, hire-me posts, portfolio/self-promo, selling services, job seekers, general discussion, advice, showcases, news, or spam. For real buyer/hiring posts: high=paid+urgent/budget/ready; medium=paid/no urgency or urgent/no budget; low=unpaid/vague but still wants help/hiring. ' . job_type_prompt_instruction($jobTypeOptions);
 }
 
 function build_classification_payload(array $items, string $model, array $jobTypeOptions): array {
@@ -713,7 +728,7 @@ function build_classification_payload(array $items, string $model, array $jobTyp
 		return [
 			'contents' => [[
 				'parts' => [[
-					'text' => "Classify each Reddit item. Return one JSON array with objects containing id, summary, monthly_amount, priority, and job_type. Do not use markdown.\nPriority must be one of: low, medium, high, not_hiring.\nmonthly_amount is only for high priority: estimate monthly USD value like \"$3,000/mo\" from budget, pay, rate, or salary. Convert hourly, weekly, annual, or project pay to monthly equivalent when possible. Use \"unknown\" when no money is stated. Use \"\" for non-high.\nnot_hiring means freelancer offers, hire-me posts, portfolios, job seekers, advice, discussion, showcases, news, spam, or anything not posted by someone hiring for a role/task/vendor.\nhigh means paid urgent/budget/ready hiring. medium means paid hiring without urgency or urgent hiring without budget. low means vague or unpaid but still seeking help.\n" . job_type_prompt_instruction($jobTypeOptions) . "\nItems: " . json_encode($items, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE),
+					'text' => "Classify each Reddit item. Return one JSON array with objects containing id, summary, monthly_amount, priority, job_type, and scam_likelihood. Do not use markdown.\nPriority must be one of: low, medium, high, not_hiring.\nscam_likelihood must be an integer from 0 to 100 estimating the chance this is a scam or unsafe lead. Raise it for unrealistic pay, vague easy-work promises, payment forwarding, crypto/check schemes, requests for money, account access, off-platform payment, suspicious urgency, or impersonation. Lower it for specific normal paid work with credible details.\nmonthly_amount is only for high priority: estimate monthly USD value like \"$3,000/mo\" from budget, pay, rate, or salary. Convert hourly, weekly, annual, or project pay to monthly equivalent when possible. Use \"unknown\" when no money is stated. Use \"\" for non-high.\nnot_hiring means freelancer offers, hire-me posts, portfolios, job seekers, advice, discussion, showcases, news, spam, or anything not posted by someone hiring for a role/task/vendor.\nhigh means paid urgent/budget/ready hiring. medium means paid hiring without urgency or urgent hiring without budget. low means vague or unpaid but still seeking help.\n" . job_type_prompt_instruction($jobTypeOptions) . "\nItems: " . json_encode($items, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE),
 				]],
 			]],
 			'generationConfig' => [
@@ -750,8 +765,9 @@ function build_classification_payload(array $items, string $model, array $jobTyp
 					'enum' => ['low', 'medium', 'high', 'not_hiring'],
 				],
 				'job_type' => ['type' => 'STRING'],
+				'scam_likelihood' => ['type' => 'INTEGER'],
 			],
-			'required' => ['id', 'summary', 'monthly_amount', 'priority', 'job_type'],
+			'required' => ['id', 'summary', 'monthly_amount', 'priority', 'job_type', 'scam_likelihood'],
 		],
 	];
 	return $payload;
@@ -920,6 +936,7 @@ function migrate_ai_table(PDO $db): void {
 		priority TEXT NOT NULL CHECK(priority IN ("low", "medium", "high", "not_hiring")),
 		monthly_amount TEXT NOT NULL DEFAULT \'\',
 		job_type TEXT NOT NULL DEFAULT \'\',
+		scam_likelihood INTEGER NOT NULL DEFAULT 0 CHECK(scam_likelihood >= 0 AND scam_likelihood <= 100),
 		model TEXT NOT NULL,
 		input_hash TEXT NOT NULL,
 		created_at INTEGER NOT NULL,
@@ -935,6 +952,7 @@ function migrate_ai_table(PDO $db): void {
 	$columns = ai_table_columns($db);
 	$hasMonthlyAmount = isset($columns['monthly_amount']);
 	$hasJobType = isset($columns['job_type']);
+	$hasScamLikelihood = isset($columns['scam_likelihood']);
 	$prioritySupportsNotHiring = is_string($existingSql) && strpos($existingSql, '"not_hiring"') !== false;
 	if ($prioritySupportsNotHiring) {
 		if (!$hasMonthlyAmount) {
@@ -942,6 +960,9 @@ function migrate_ai_table(PDO $db): void {
 		}
 		if (!$hasJobType) {
 			$db->exec('ALTER TABLE rss_leads_ai ADD COLUMN job_type TEXT NOT NULL DEFAULT \'\'');
+		}
+		if (!$hasScamLikelihood) {
+			$db->exec('ALTER TABLE rss_leads_ai ADD COLUMN scam_likelihood INTEGER NOT NULL DEFAULT 0');
 		}
 		ensure_job_type_table($db);
 		return;
@@ -954,14 +975,19 @@ function migrate_ai_table(PDO $db): void {
 		$db->exec('ALTER TABLE rss_leads_ai ADD COLUMN job_type TEXT NOT NULL DEFAULT \'\'');
 		$hasJobType = true;
 	}
+	if (!$hasScamLikelihood) {
+		$db->exec('ALTER TABLE rss_leads_ai ADD COLUMN scam_likelihood INTEGER NOT NULL DEFAULT 0');
+		$hasScamLikelihood = true;
+	}
 
 	$db->beginTransaction();
 	$db->exec('DROP TABLE IF EXISTS rss_leads_ai_new');
 	$db->exec(str_replace('rss_leads_ai', 'rss_leads_ai_new', $createSql));
 	$monthlyAmountSelect = $hasMonthlyAmount ? 'monthly_amount' : "'' AS monthly_amount";
 	$jobTypeSelect = $hasJobType ? 'job_type' : "'' AS job_type";
-	$db->exec('INSERT INTO rss_leads_ai_new (entry_id, link, summary, priority, monthly_amount, job_type, model, input_hash, created_at, updated_at)
-		SELECT entry_id, link, summary, priority, ' . $monthlyAmountSelect . ', ' . $jobTypeSelect . ', model, input_hash, created_at, updated_at FROM rss_leads_ai');
+	$scamLikelihoodSelect = $hasScamLikelihood ? 'scam_likelihood' : '0 AS scam_likelihood';
+	$db->exec('INSERT INTO rss_leads_ai_new (entry_id, link, summary, priority, monthly_amount, job_type, scam_likelihood, model, input_hash, created_at, updated_at)
+		SELECT entry_id, link, summary, priority, ' . $monthlyAmountSelect . ', ' . $jobTypeSelect . ', ' . $scamLikelihoodSelect . ', model, input_hash, created_at, updated_at FROM rss_leads_ai');
 	$db->exec('DROP TABLE rss_leads_ai');
 	$db->exec('ALTER TABLE rss_leads_ai_new RENAME TO rss_leads_ai');
 	$db->commit();
@@ -995,6 +1021,7 @@ try {
 	$db->exec('CREATE INDEX IF NOT EXISTS idx_rss_leads_ai_priority ON rss_leads_ai(priority, updated_at)');
 	$db->exec('CREATE INDEX IF NOT EXISTS idx_rss_leads_ai_link ON rss_leads_ai(link)');
 	$db->exec('CREATE INDEX IF NOT EXISTS idx_rss_leads_ai_job_type ON rss_leads_ai(job_type, updated_at)');
+	$db->exec('CREATE INDEX IF NOT EXISTS idx_rss_leads_ai_scam_likelihood ON rss_leads_ai(scam_likelihood, updated_at)');
 	$jobTypeOptions = load_job_type_options($db, $jobTypeOptionLimit);
 } catch (Throwable $e) {
 	record_error($state, 'database', 'db_open_or_migration_failed', $e->getMessage(), [
@@ -1064,14 +1091,15 @@ foreach ($rows as $row) {
 }
 
 $upsert = $db->prepare(
-	'INSERT INTO rss_leads_ai (entry_id, link, summary, priority, monthly_amount, job_type, model, input_hash, created_at, updated_at)
-	 VALUES (:entry_id, :link, :summary, :priority, :monthly_amount, :job_type, :model, :input_hash, :created_at, :updated_at)
+	'INSERT INTO rss_leads_ai (entry_id, link, summary, priority, monthly_amount, job_type, scam_likelihood, model, input_hash, created_at, updated_at)
+	 VALUES (:entry_id, :link, :summary, :priority, :monthly_amount, :job_type, :scam_likelihood, :model, :input_hash, :created_at, :updated_at)
 	 ON CONFLICT(entry_id) DO UPDATE SET
 		link = excluded.link,
 		summary = excluded.summary,
 		priority = excluded.priority,
 		monthly_amount = excluded.monthly_amount,
 		job_type = excluded.job_type,
+		scam_likelihood = excluded.scam_likelihood,
 		model = excluded.model,
 		input_hash = excluded.input_hash,
 		updated_at = excluded.updated_at'
@@ -1102,7 +1130,7 @@ $routeByLink = $db->prepare(
 	   )'
 );
 
-function save_classification(PDOStatement $upsert, PDOStatement $routeByLink, PDOStatement $upsertJobType, array $group, string $link, string $summary, string $priority, string $monthlyAmount, string $jobType, string $model, string $hash, int $now): int {
+function save_classification(PDOStatement $upsert, PDOStatement $routeByLink, PDOStatement $upsertJobType, array $group, string $link, string $summary, string $priority, string $monthlyAmount, string $jobType, int $scamLikelihood, string $model, string $hash, int $now): int {
 	$saved = 0;
 	foreach ($group['ids'] as $entryId) {
 		$upsert->execute([
@@ -1112,6 +1140,7 @@ function save_classification(PDOStatement $upsert, PDOStatement $routeByLink, PD
 			':priority' => $priority,
 			':monthly_amount' => $monthlyAmount,
 			':job_type' => $jobType,
+			':scam_likelihood' => $scamLikelihood,
 			':model' => $model,
 			':input_hash' => $hash,
 			':created_at' => $now,
@@ -1132,33 +1161,35 @@ function save_classification(PDOStatement $upsert, PDOStatement $routeByLink, PD
 }
 
 $refineRows = [];
-try {
-	$refineStmt = $db->prepare(
-		'SELECT e.id, e.title, e.content, e.link, e.date, f.name AS feed_name, ai.priority AS ai_priority, ai.updated_at AS ai_updated_at
-		 FROM entry e
-		 JOIN feed f ON f.id = e.id_feed
-		 JOIN rss_leads_ai ai ON ai.entry_id = e.id
-		 WHERE ai.input_hash LIKE :gemma_hash_prefix
-		   AND e.date >= :since
-		   AND (f.name LIKE "Reddit Leads%" OR e.link LIKE "%reddit.com/r/%")
-		   AND f.name != "High Priority Reddit Leads"
-		 ORDER BY
-		   CASE ai.priority
-			 WHEN "high" THEN 0
-			 WHEN "medium" THEN 1
-			 WHEN "low" THEN 2
-			 ELSE 3
-		   END,
-		   ai.updated_at ASC
-		 LIMIT :limit'
-	);
-	$refineStmt->bindValue(':gemma_hash_prefix', $promptVersion . ':gemma:%', PDO::PARAM_STR);
-	$refineStmt->bindValue(':since', $since, PDO::PARAM_INT);
-	$refineStmt->bindValue(':limit', $flashLiteRefineBatchSize * 4, PDO::PARAM_INT);
-	$refineStmt->execute();
-	$refineRows = $refineStmt->fetchAll(PDO::FETCH_ASSOC);
-} catch (Throwable $e) {
-	record_error($state, 'database', 'refine_query_failed', $e->getMessage());
+if (empty($entryIds)) {
+	try {
+		$refineStmt = $db->prepare(
+			'SELECT e.id, e.title, e.content, e.link, e.date, f.name AS feed_name, ai.priority AS ai_priority, ai.updated_at AS ai_updated_at
+			 FROM entry e
+			 JOIN feed f ON f.id = e.id_feed
+			 JOIN rss_leads_ai ai ON ai.entry_id = e.id
+			 WHERE ai.input_hash LIKE :gemma_hash_prefix
+			   AND e.date >= :since
+			   AND (f.name LIKE "Reddit Leads%" OR e.link LIKE "%reddit.com/r/%")
+			   AND f.name != "High Priority Reddit Leads"
+			 ORDER BY
+			   CASE ai.priority
+				 WHEN "high" THEN 0
+				 WHEN "medium" THEN 1
+				 WHEN "low" THEN 2
+				 ELSE 3
+			   END,
+			   ai.updated_at ASC
+			 LIMIT :limit'
+		);
+		$refineStmt->bindValue(':gemma_hash_prefix', $promptVersion . ':gemma:%', PDO::PARAM_STR);
+		$refineStmt->bindValue(':since', $since, PDO::PARAM_INT);
+		$refineStmt->bindValue(':limit', $flashLiteRefineBatchSize * 4, PDO::PARAM_INT);
+		$refineStmt->execute();
+		$refineRows = $refineStmt->fetchAll(PDO::FETCH_ASSOC);
+	} catch (Throwable $e) {
+		record_error($state, 'database', 'refine_query_failed', $e->getMessage());
+	}
 }
 
 $refineGroups = [];
@@ -1193,7 +1224,7 @@ foreach ($groups as $link => $group) {
 	}
 	$hash = $promptVersion . ':local:' . hash('sha256', json_encode($group, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE));
 	try {
-		$saved += save_classification($upsert, $routeByLink, $upsertJobType, $group, $link, $localSummary, 'not_hiring', '', '', 'local-heuristic', $hash, $now);
+		$saved += save_classification($upsert, $routeByLink, $upsertJobType, $group, $link, $localSummary, 'not_hiring', '', '', 0, 'local-heuristic', $hash, $now);
 		$priorityCounts['not_hiring'] = ($priorityCounts['not_hiring'] ?? 0) + 1;
 		$locallyClassified++;
 	} catch (Throwable $e) {
@@ -1308,13 +1339,14 @@ if (!empty($refineGroups)) {
 		}
 		$monthlyAmount = monthly_amount_for_result($result, $group, $priority);
 		$jobType = job_type_for_result($result, $group, $priority);
+		$scamLikelihood = scam_likelihood_for_result($result);
 		$priorityCounts[$priority] = ($priorityCounts[$priority] ?? 0) + 1;
 		if ($jobType !== '') {
 			$jobTypeCounts[$jobType] = ($jobTypeCounts[$jobType] ?? 0) + 1;
 		}
 		$hash = $promptVersion . ':refine:' . hash('sha256', json_encode($group, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE));
 		try {
-			$saved += save_classification($upsert, $routeByLink, $upsertJobType, $group, $link, $summary, $priority, $monthlyAmount, $jobType, $refineModel ?: 'gemini-refine', $hash, $now);
+			$saved += save_classification($upsert, $routeByLink, $upsertJobType, $group, $link, $summary, $priority, $monthlyAmount, $jobType, $scamLikelihood, $refineModel ?: 'gemini-refine', $hash, $now);
 			$refinedLinks++;
 		} catch (Throwable $e) {
 			record_error($state, 'database', 'refine_save_failed', $e->getMessage(), [
@@ -1380,13 +1412,14 @@ while (!empty($gemmaQueue) && $gemmaBatches < $gemmaFirstPassRequestsPerRun) {
 		}
 		$monthlyAmount = monthly_amount_for_result($result, $group, $priority);
 		$jobType = job_type_for_result($result, $group, $priority);
+		$scamLikelihood = scam_likelihood_for_result($result);
 		$priorityCounts[$priority] = ($priorityCounts[$priority] ?? 0) + 1;
 		if ($jobType !== '') {
 			$jobTypeCounts[$jobType] = ($jobTypeCounts[$jobType] ?? 0) + 1;
 		}
 		$hash = $promptVersion . ':gemma:' . hash('sha256', json_encode($group, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE));
 		try {
-			$saved += save_classification($upsert, $routeByLink, $upsertJobType, $group, $link, $summary, $priority, $monthlyAmount, $jobType, $gemmaModel, $hash, $now);
+			$saved += save_classification($upsert, $routeByLink, $upsertJobType, $group, $link, $summary, $priority, $monthlyAmount, $jobType, $scamLikelihood, $gemmaModel, $hash, $now);
 			$gemmaCachedLinks++;
 		} catch (Throwable $e) {
 			record_error($state, 'database', 'gemma_save_failed', $e->getMessage(), [

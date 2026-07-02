@@ -18,7 +18,10 @@ services:
       - ./freshrss-public/rss-leads-high-priority.php:/var/www/FreshRSS/p/rss-leads-high-priority.php
 
   ai-filter:
-    image: freshrss/freshrss:latest
+    build:
+      context: .
+      dockerfile: Dockerfile.ai-filter
+    image: rss-leads-ai-filter:latest
     container_name: rss-leads-ai-filter
     restart: unless-stopped
     depends_on:
@@ -44,6 +47,19 @@ services:
       AI_FILTER_DAILY_REQUEST_BUDGET: ${AI_FILTER_DAILY_REQUEST_BUDGET:-0}
       AI_MODEL_DAILY_LIMITS: ${AI_MODEL_DAILY_LIMITS:-gemini-3.1-flash-lite=500,gemini-3-flash=20,gemma4-31b=1500}
       AI_FILTER_QUOTA_COOLDOWN_SECONDS: ${AI_FILTER_QUOTA_COOLDOWN_SECONDS:-21600}
+      AI_BENCHMARK_LOW_INTELLIGENCE_MODELS: ${AI_BENCHMARK_LOW_INTELLIGENCE_MODELS:-gemma4-31b,gemini-3.1-flash-lite,gemini-3-flash}
+      AI_BENCHMARK_SAMPLE_SIZE: ${AI_BENCHMARK_SAMPLE_SIZE:-8}
+      AI_BENCHMARK_HIGH_INTELLIGENCE_API_KEY: ${AI_BENCHMARK_HIGH_INTELLIGENCE_API_KEY:-}
+      AI_BENCHMARK_HIGH_INTELLIGENCE_MODEL: ${AI_BENCHMARK_HIGH_INTELLIGENCE_MODEL:-gemini-3.1-pro-preview}
+      AI_BENCHMARK_HIGH_INTELLIGENCE_AGENT: ${AI_BENCHMARK_HIGH_INTELLIGENCE_AGENT:-}
+      AI_BENCHMARK_HIGH_INTELLIGENCE_PROVIDER: ${AI_BENCHMARK_HIGH_INTELLIGENCE_PROVIDER:-antigravity-sdk}
+      AI_BENCHMARK_HIGH_INTELLIGENCE_FALLBACK_MODELS: ${AI_BENCHMARK_HIGH_INTELLIGENCE_FALLBACK_MODELS:-gemini-3.5-flash}
+      AI_BENCHMARK_HIGH_INTELLIGENCE_SDK: ${AI_BENCHMARK_HIGH_INTELLIGENCE_SDK:-1}
+      AI_BENCHMARK_HIGH_INTELLIGENCE_SDK_COMMAND: ${AI_BENCHMARK_HIGH_INTELLIGENCE_SDK_COMMAND:-}
+      AI_BENCHMARK_HIGH_INTELLIGENCE_CLI: ${AI_BENCHMARK_HIGH_INTELLIGENCE_CLI:-}
+      AI_BENCHMARK_ANTIGRAVITY_APP_DATA_DIR: ${AI_BENCHMARK_ANTIGRAVITY_APP_DATA_DIR:-/tmp/rss-leads-antigravity-app}
+      AI_BENCHMARK_ANTIGRAVITY_SAVE_DIR: ${AI_BENCHMARK_ANTIGRAVITY_SAVE_DIR:-/tmp/rss-leads-antigravity-sessions}
+      AI_BENCHMARK_ANTIGRAVITY_WORKSPACE: ${AI_BENCHMARK_ANTIGRAVITY_WORKSPACE:-/tmp}
     entrypoint: ["/bin/sh", "-c"]
     command: >
       'while true; do
@@ -53,6 +69,8 @@ services:
     volumes:
       - freshrss_data:/var/www/FreshRSS/data
       - ./scripts/gemini-ai-filter.php:/opt/rss-leads-stack/scripts/gemini-ai-filter.php:ro
+      - ./scripts/benchmark-ai-models.php:/opt/rss-leads-stack/scripts/benchmark-ai-models.php:ro
+      - ./scripts/antigravity-high-intelligence-judge.py:/opt/rss-leads-stack/scripts/antigravity-high-intelligence-judge.py:ro
       - ./scripts/sync-freshrss-high-priority.php:/opt/rss-leads-stack/scripts/sync-freshrss-high-priority.php:ro
 
   rssbridge:
