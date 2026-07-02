@@ -975,9 +975,8 @@
 		badge.title = 'LLM-estimated scam likelihood: ' + score + '%';
 		var cut = Math.max(0, Math.min(100, score));
 		var currentHue = Math.max(0, 120 - (cut * 1.2));
-		var startColor = 'hsl(120, 80%, 25%)';
 		var currentColor = 'hsl(' + currentHue + ', 80%, 30%)';
-		badge.style.background = 'linear-gradient(90deg, ' + startColor + ' 0%, ' + currentColor + ' ' + cut + '%, #1f2937 ' + cut + '%, #1f2937 100%)';
+		badge.style.background = 'linear-gradient(90deg, ' + currentColor + ' 0%, ' + currentColor + ' ' + cut + '%, #1f2937 ' + cut + '%, #1f2937 100%)';
 		return badge;
 	}
 
