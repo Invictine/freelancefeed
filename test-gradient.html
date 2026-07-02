@@ -1,0 +1,21 @@
+<!DOCTYPE html>
+<html>
+<head>
+<style>
+.badge { display: inline-block; width: 200px; height: 30px; color: white; line-height: 30px; text-align: center; font-family: sans-serif; margin: 10px; }
+</style>
+</head>
+<body>
+<script>
+for (let score of [0, 15, 50, 85, 100]) {
+    let div = document.createElement('div');
+    div.className = 'badge';
+    div.textContent = 'Scam ' + score + '%';
+    let hue = Math.max(0, 120 - (score * 1.2));
+    let color = 'hsl(' + hue + ', 80%, 35%)';
+    div.style.background = 'linear-gradient(90deg, #166534 0%, ' + color + ' ' + score + '%, #1f2937 ' + score + '%, #1f2937 100%)';
+    document.body.appendChild(div);
+}
+</script>
+</body>
+</html>

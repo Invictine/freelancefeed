@@ -974,8 +974,10 @@
 		badge.textContent = 'Scam ' + score + '%';
 		badge.title = 'LLM-estimated scam likelihood: ' + score + '%';
 		var cut = Math.max(0, Math.min(100, score));
-		badge.style.backgroundImage = 'linear-gradient(90deg, #7f1d1d 0%, #b91c1c ' + cut + '%, #064e3b ' + cut + '%, #052e16 100%)';
-		badge.style.backgroundColor = 'transparent';
+		var currentHue = Math.max(0, 120 - (cut * 1.2));
+		var startColor = 'hsl(120, 80%, 25%)';
+		var currentColor = 'hsl(' + currentHue + ', 80%, 30%)';
+		badge.style.background = 'linear-gradient(90deg, ' + startColor + ' 0%, ' + currentColor + ' ' + cut + '%, #1f2937 ' + cut + '%, #1f2937 100%)';
 		return badge;
 	}
 
