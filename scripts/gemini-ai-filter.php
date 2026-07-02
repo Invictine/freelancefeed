@@ -92,7 +92,10 @@ function save_state(string $path, array $state): void {
 		return;
 	}
 	$state['updated_at'] = time();
-	file_put_contents($path, json_encode($state, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES) . "\n");
+	$tempPath = $path . '.tmp.' . uniqid('', true);
+	if (file_put_contents($tempPath, json_encode($state, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES) . "\n") !== false) {
+		rename($tempPath, $path);
+	}
 }
 
 function push_limited(array &$state, string $key, array $item, int $limit): void {
@@ -632,50 +635,16 @@ function job_type_prompt_instruction(array $jobTypeOptions): string {
 }
 
 function decode_json_array(string $text, array $expectedIds = []): ?array {
+	// Strip any possible markdown codeblock wrappers if present
+	$text = trim($text);
+	if (strpos($text, '```') === 0) {
+		$text = preg_replace('/^```(?:json)?\s*/i', '', $text);
+		$text = preg_replace('/\s*```$/', '', $text);
+	}
+	
 	$decoded = json_decode($text, true);
 	if (is_array($decoded) && valid_classification_array($decoded, $expectedIds)) {
 		return $decoded;
-	}
-
-	$offset = 0;
-	$length = strlen($text);
-	while (($start = strpos($text, '[', $offset)) !== false) {
-		$depth = 0;
-		$inString = false;
-		$escaped = false;
-		for ($i = $start; $i < $length; $i++) {
-			$char = $text[$i];
-			if ($inString) {
-				if ($escaped) {
-					$escaped = false;
-				} elseif ($char === '\\') {
-					$escaped = true;
-				} elseif ($char === '"') {
-					$inString = false;
-				}
-				continue;
-			}
-			if ($char === '"') {
-				$inString = true;
-				continue;
-			}
-			if ($char === '[') {
-				$depth++;
-				continue;
-			}
-			if ($char === ']') {
-				$depth--;
-				if ($depth === 0) {
-					$candidate = substr($text, $start, $i - $start + 1);
-					$decoded = json_decode($candidate, true);
-					if (is_array($decoded) && valid_classification_array($decoded, $expectedIds)) {
-						return $decoded;
-					}
-					break;
-				}
-			}
-		}
-		$offset = $start + 1;
 	}
 	return null;
 }

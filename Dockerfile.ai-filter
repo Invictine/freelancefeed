@@ -15,6 +15,12 @@ RUN set -eux; \
     fi; \
     python3 -m venv /opt/rss-leads-antigravity-venv; \
     /opt/rss-leads-antigravity-venv/bin/pip install --no-cache-dir --upgrade pip; \
-    /opt/rss-leads-antigravity-venv/bin/pip install --no-cache-dir "google-antigravity==${GOOGLE_ANTIGRAVITY_VERSION}"
+    /opt/rss-leads-antigravity-venv/bin/pip install --no-cache-dir "google-antigravity==${GOOGLE_ANTIGRAVITY_VERSION}"; \
+    if command -v curl >/dev/null 2>&1; then \
+        curl -fsSL "https://github.com/aptible/supercronic/releases/download/v0.2.29/supercronic-linux-amd64" -o /usr/local/bin/supercronic; \
+    else \
+        wget -qO /usr/local/bin/supercronic "https://github.com/aptible/supercronic/releases/download/v0.2.29/supercronic-linux-amd64"; \
+    fi; \
+    chmod +x /usr/local/bin/supercronic
 
 ENV PATH="/opt/rss-leads-antigravity-venv/bin:${PATH}"

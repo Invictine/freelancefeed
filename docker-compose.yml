@@ -62,10 +62,7 @@ services:
       AI_BENCHMARK_ANTIGRAVITY_WORKSPACE: ${AI_BENCHMARK_ANTIGRAVITY_WORKSPACE:-/tmp}
     entrypoint: ["/bin/sh", "-c"]
     command: >
-      'while true; do
-        php /opt/rss-leads-stack/scripts/gemini-ai-filter.php || true;
-        sleep "$${AI_FILTER_INTERVAL_SECONDS:-300}";
-      done'
+      sh -c 'echo "@every $${AI_FILTER_INTERVAL_SECONDS:-180}s php /opt/rss-leads-stack/scripts/gemini-ai-filter.php" > /tmp/crontab && supercronic /tmp/crontab'
     volumes:
       - freshrss_data:/var/www/FreshRSS/data
       - ./scripts/gemini-ai-filter.php:/opt/rss-leads-stack/scripts/gemini-ai-filter.php:ro
