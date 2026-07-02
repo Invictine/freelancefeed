@@ -1247,7 +1247,7 @@
 			if (compactScamLikelihood !== null) {
 				compactMeta.appendChild(createScamBadge(compactScamLikelihood));
 			}
-			if (priority === 'high' && result.summary) {
+			if (result.summary) {
 				var compactSummary = document.createElement('span');
 				compactSummary.className = 'rss-leads-ai-summary';
 				compactSummary.textContent = result.summary;
