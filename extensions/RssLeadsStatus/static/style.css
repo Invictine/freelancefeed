@@ -1099,7 +1099,7 @@
 	display: none;
 }
 
-.flux[data-ai-priority] .flux_header .item.titleAuthorSummaryDate {
+.flux .flux_header .item.titleAuthorSummaryDate {
 	box-sizing: border-box;
 	display: grid;
 	gap: 0.12rem 0.75rem;
@@ -1108,7 +1108,7 @@
 	vertical-align: top;
 }
 
-.flux[data-ai-priority] .flux_header .item.titleAuthorSummaryDate > .title {
+.flux .flux_header .item.titleAuthorSummaryDate > .title {
 	display: block;
 	grid-column: 1;
 	grid-row: 1;
@@ -1122,14 +1122,14 @@
 	white-space: nowrap;
 }
 
-.flux[data-ai-priority] .flux_header .item.titleAuthorSummaryDate > .rss-leads-title-meta {
+.flux .flux_header .item.titleAuthorSummaryDate > .rss-leads-title-meta {
 	grid-column: 1 / -1;
 	min-width: 0;
 }
 
-.flux[data-ai-priority] .flux_header .item.titleAuthorSummaryDate > .date,
-.flux[data-ai-priority] .flux_header .item.titleAuthorSummaryDate > time,
-.flux[data-ai-priority] .flux_header .item.titleAuthorSummaryDate > .item.date {
+.flux .flux_header .item.titleAuthorSummaryDate > .date,
+.flux .flux_header .item.titleAuthorSummaryDate > time,
+.flux .flux_header .item.titleAuthorSummaryDate > .item.date {
 	align-self: start;
 	float: none;
 	grid-column: 2;
@@ -1144,9 +1144,9 @@
 	white-space: nowrap;
 }
 
-.flux[data-ai-priority] .flux_header .item.titleAuthorSummaryDate > .item.summary,
-.flux[data-ai-priority] .flux_header .item.titleAuthorSummaryDate > .summary,
-.flux[data-ai-priority] .flux_header .item.titleAuthorSummaryDate > .rss-leads-ai-compact {
+.flux .flux_header .item.titleAuthorSummaryDate > .item.summary,
+.flux .flux_header .item.titleAuthorSummaryDate > .summary,
+.flux .flux_header .item.titleAuthorSummaryDate > .rss-leads-ai-compact {
 	grid-column: 1 / -1;
 	min-width: 0;
 }
