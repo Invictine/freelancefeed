@@ -970,11 +970,12 @@
 	function createScamBadge(score) {
 		var badge = document.createElement('span');
 		var tone = scamLikelihoodTone(score);
-		var cut = Math.max(0, Math.min(100, 100 - score));
 		badge.className = 'rss-leads-ai-scam rss-leads-ai-scam-' + tone;
 		badge.textContent = 'Scam ' + score + '%';
 		badge.title = 'LLM-estimated scam likelihood: ' + score + '%';
-		badge.style.backgroundImage = 'linear-gradient(90deg, #052e16 0%, #064e3b ' + cut + '%, #7f1d1d ' + cut + '%, #b91c1c 100%)';
+		var hue = Math.round(120 - (score * 1.2));
+		badge.style.backgroundColor = 'hsl(' + hue + ', 80%, 25%)';
+		badge.style.backgroundImage = 'none';
 		return badge;
 	}
 
