@@ -973,9 +973,9 @@
 		badge.className = 'rss-leads-ai-scam rss-leads-ai-scam-' + tone;
 		badge.textContent = 'Scam ' + score + '%';
 		badge.title = 'LLM-estimated scam likelihood: ' + score + '%';
-		var hue = Math.round(120 - (score * 1.2));
-		badge.style.backgroundColor = 'hsl(' + hue + ', 80%, 25%)';
-		badge.style.backgroundImage = 'none';
+		var cut = Math.max(0, Math.min(100, score));
+		badge.style.backgroundImage = 'linear-gradient(90deg, #7f1d1d 0%, #b91c1c ' + cut + '%, #064e3b ' + cut + '%, #052e16 100%)';
+		badge.style.backgroundColor = 'transparent';
 		return badge;
 	}
 
