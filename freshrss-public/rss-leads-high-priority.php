@@ -11,9 +11,58 @@ if (preg_match('/^[A-Za-z0-9_.-]+$/', $user) !== 1) {
 }
 
 $dbPath = getenv('FRESHRSS_DB') ?: "/var/www/FreshRSS/data/users/{$user}/db.sqlite";
+$allFeedName = 'Reddit Leads - all communities';
 $qualifiedFeedName = 'Reddit Leads - qualified deep-research communities';
 $unqualifiedFeedName = 'Reddit Leads - unqualified deep-research communities';
-$limit = max(1, min(500, (int)($_GET['limit'] ?? 200)));
+$recoveredFeedName = 'Recovered Reddit Leads - AI classified history';
+$commentFeedLike = 'Reddit Leads - comments - %';
+$limit = max(1, min(5000, (int)($_GET['limit'] ?? 1000)));
+$bucketKey = (string)($_GET['bucket'] ?? 'priority');
+$buckets = [
+	'low' => [
+		'title' => 'Low Priority Reddit Leads',
+		'description' => 'AI-classified low-priority Reddit leads from FreshRSS.',
+		'priorities' => ['low'],
+		'guid_prefix' => 'rss-leads-low:',
+		'cache_name' => 'rss_leads_low_priority.xml',
+		'location_filter' => false,
+		'require_known_payment' => false,
+	],
+	'low_medium' => [
+		'title' => 'Low-Medium Reddit Leads',
+		'description' => 'AI-classified medium Reddit leads from FreshRSS.',
+		'priorities' => ['medium'],
+		'guid_prefix' => 'rss-leads-medium:',
+		'cache_name' => 'rss_leads_low_medium.xml',
+		'location_filter' => false,
+		'require_known_payment' => false,
+	],
+	'high' => [
+		'title' => 'High Reddit Leads',
+		'description' => 'AI-classified high and x-high Reddit leads with known payment from FreshRSS.',
+		'priorities' => ['high', 'x_high'],
+		'guid_prefix' => 'rss-leads-high:',
+		'cache_name' => 'rss_leads_high_priority.xml',
+		'location_filter' => true,
+		'require_known_payment' => true,
+	],
+	'not_hiring' => [
+		'title' => 'Not Hiring Reddit Posts',
+		'description' => 'AI-classified not-hiring Reddit posts from FreshRSS.',
+		'priorities' => ['not_hiring'],
+		'guid_prefix' => 'rss-leads-not-hiring:',
+		'cache_name' => 'rss_leads_not_hiring.xml',
+		'location_filter' => false,
+		'require_known_payment' => false,
+	],
+];
+if ($bucketKey === 'priority') {
+	$bucketKey = 'high';
+} elseif (!isset($buckets[$bucketKey])) {
+	$bucketKey = 'high';
+}
+$bucket = $buckets[$bucketKey];
+$cachePath = getenv('RSS_LEADS_HIGH_PRIORITY_CACHE') ?: "/var/www/FreshRSS/data/users/{$user}/" . $bucket['cache_name'];
 
 function rss_text(string $value): string {
 	return htmlspecialchars($value, ENT_XML1 | ENT_COMPAT, 'UTF-8');
@@ -33,6 +82,10 @@ function rss_compact_html(string $html, int $limit = 6000): string {
 
 function rss_high_priority_guid(string $link): string {
 	return 'rss-leads-high:' . sha1($link);
+}
+
+function rss_bucket_guid(array $bucket, string $link): string {
+	return (string)$bucket['guid_prefix'] . sha1($link);
 }
 
 function rss_monthly_amount_label(string $monthlyAmount): string {
@@ -72,6 +125,83 @@ function rss_compact_text(string $html, int $limit = 2400): string {
 	return $text;
 }
 
+function rss_normalized_text(string $value): string {
+	$value = html_entity_decode(strip_tags($value), ENT_QUOTES | ENT_HTML5, 'UTF-8');
+	$value = mb_strtolower($value, 'UTF-8');
+	$value = preg_replace('/[^a-z0-9+#\/ -]+/u', ' ', $value) ?? $value;
+	$value = str_replace(['.', ','], ' ', $value);
+	$value = preg_replace('/\s+/u', ' ', $value) ?? $value;
+	return trim($value);
+}
+
+function rss_configured_locations(): array {
+	$locations = [];
+	$env = trim((string)(getenv('RSS_LEADS_LOCAL_LOCATIONS') ?: ''));
+	if ($env !== '') {
+		foreach (preg_split('/[;\n|]+/', $env) ?: [] as $location) {
+			$location = rss_normalized_text($location);
+			if ($location !== '') {
+				$locations[$location] = true;
+			}
+		}
+	}
+	$configPaths = [
+		getenv('RSS_LEADS_LOCATION_CONFIG') ?: '/opt/rss-leads-stack/feeds/local-location.json',
+		getenv('RSS_LEADS_LOCATION_USER_CONFIG') ?: '/var/www/FreshRSS/data/users/' . (getenv('RSS_LEADS_USER') ?: (getenv('FRESHRSS_USER') ?: 'invictine')) . '/rss_leads_location.json',
+	];
+	foreach ($configPaths as $configPath) {
+		if (!is_readable($configPath)) {
+			continue;
+		}
+		$json = file_get_contents($configPath);
+		$config = is_string($json) ? json_decode($json, true) : null;
+		if (!is_array($config)) {
+			continue;
+		}
+		foreach (($config['locations'] ?? []) as $location) {
+			$location = rss_normalized_text((string)$location);
+			if ($location !== '') {
+				$locations[$location] = true;
+			}
+		}
+	}
+	return array_keys($locations);
+}
+
+function rss_in_person_required(string $text): bool {
+	$normalized = rss_normalized_text($text);
+	$patterns = [
+		'/\b(in person|in-person|onsite|on-site|on site|office based|office-based|hybrid|local candidates?|must be (?:based|located)|based in|located in|relocat(?:e|ion)|commut(?:e|ing))\b/u',
+		'/\b(?:near|around|within) [a-z][a-z -]{2,40}\b/u',
+	];
+	foreach ($patterns as $pattern) {
+		if (preg_match($pattern, $normalized) === 1) {
+			return true;
+		}
+	}
+	if (preg_match('/\bremote\b/u', $normalized) === 1 && preg_match('/\bhybrid\b/u', $normalized) !== 1) {
+		return false;
+	}
+	return false;
+}
+
+function rss_location_allowed_for_high_priority(array $item, array $locations): bool {
+	if (empty($locations)) {
+		return true;
+	}
+	$text = (string)($item['title'] ?? '') . ' ' . (string)($item['content'] ?? '');
+	if (!rss_in_person_required($text)) {
+		return true;
+	}
+	$normalized = ' ' . rss_normalized_text($text) . ' ';
+	foreach ($locations as $location) {
+		if ($location !== '' && str_contains($normalized, ' ' . $location . ' ')) {
+			return true;
+		}
+	}
+	return false;
+}
+
 function rss_estimate_monthly_amount(string $title, string $content): string {
 	$text = rss_compact_text($title . ' ' . $content);
 	$money = '[$]\s*([0-9][0-9,]*(?:\.[0-9]+)?)\s*([kKmM]?)';
@@ -103,6 +233,11 @@ function rss_resolve_monthly_amount(string $monthlyAmount, string $title, string
 		return $monthlyAmount;
 	}
 	return rss_estimate_monthly_amount($title, $content);
+}
+
+function rss_has_known_payment(string $monthlyAmount, string $title, string $content): bool {
+	$resolved = rss_resolve_monthly_amount($monthlyAmount, $title, $content);
+	return trim($resolved) !== '' && mb_strtolower(trim($resolved), 'UTF-8') !== 'unknown';
 }
 
 function rss_monthly_amount_tag(string $monthlyAmount): string {
@@ -147,11 +282,41 @@ function rss_ai_has_monthly_amount(PDO $db): bool {
 	return rss_ai_has_column($db, 'monthly_amount');
 }
 
+function rss_priority_label(string $priority): string {
+	return match ($priority) {
+		'x_high' => 'x-high',
+		'not_hiring' => 'not hiring',
+		default => $priority,
+	};
+}
+
+function rss_serve_cached_feed(string $cachePath): bool {
+	if (is_readable($cachePath) && filesize($cachePath) !== false && filesize($cachePath) > 0) {
+		header('X-RSS-Leads-Cache: hit');
+		readfile($cachePath);
+		return true;
+	}
+	return false;
+}
+
+function rss_write_cache(string $cachePath, string $rss): void {
+	$dir = dirname($cachePath);
+	if (!is_dir($dir) || !is_writable($dir)) {
+		return;
+	}
+	$tempPath = $cachePath . '.tmp.' . uniqid('', true);
+	if (file_put_contents($tempPath, $rss) !== false) {
+		rename($tempPath, $cachePath);
+	}
+}
+
 try {
 	$db = new PDO('sqlite:' . $dbPath);
 	$db->setAttribute(PDO::ATTR_ERRMODE, PDO::ERRMODE_EXCEPTION);
+	$db->exec('PRAGMA busy_timeout = 1000');
 	$monthlyAmountSelect = rss_ai_has_monthly_amount($db) ? 'monthly_amount' : "'' AS monthly_amount";
 	$jobTypeSelect = rss_ai_has_column($db, 'job_type') ? 'job_type' : "'' AS job_type";
+	$prioritySql = implode(', ', array_map(static fn(string $priority): string => '"' . $priority . '"', $bucket['priorities']));
 
 	$stmt = $db->prepare(
 		'WITH latest_ai AS (
@@ -164,56 +329,83 @@ try {
 				ROW_NUMBER() OVER (
 					PARTITION BY e.link
 					ORDER BY
-						CASE WHEN f.name = :qualified_feed_rank THEN 0 ELSE 1 END,
+						CASE
+							WHEN f.name = :all_feed_rank THEN 0
+							WHEN f.name = :qualified_feed_rank THEN 1
+							WHEN f.name = :unqualified_feed_rank THEN 2
+							ELSE 3
+						END,
 						e.date DESC,
 						e.id DESC
 				) AS rn
 			FROM entry e
 			JOIN feed f ON f.id = e.id_feed
-			WHERE f.name IN (:qualified_feed_source, :unqualified_feed)
+			WHERE f.name IN (:all_feed_source, :qualified_feed_source, :unqualified_feed, :recovered_feed)
+			   OR f.name LIKE :comment_feed_like
 		)
-		SELECT e.guid, e.title, e.author, e.content, e.link, e.date, e.tags, ai.summary, ai.monthly_amount, ai.job_type, ai.model, ai.updated_at
+		SELECT e.guid, e.title, e.author, e.content, e.link, e.date, e.tags, ai.summary, ai.priority, ai.monthly_amount, ai.job_type, ai.model, ai.updated_at
 		FROM latest_ai ai
 		JOIN source_entries e ON e.link = ai.link AND e.rn = 1
 		WHERE ai.rn = 1
-		  AND ai.priority = "high"
+		  AND ai.priority IN (' . $prioritySql . ')
 		ORDER BY e.date DESC, ai.updated_at DESC
 		LIMIT :limit'
 	);
+	$stmt->bindValue(':all_feed_rank', $allFeedName, PDO::PARAM_STR);
 	$stmt->bindValue(':qualified_feed_rank', $qualifiedFeedName, PDO::PARAM_STR);
+	$stmt->bindValue(':unqualified_feed_rank', $unqualifiedFeedName, PDO::PARAM_STR);
+	$stmt->bindValue(':all_feed_source', $allFeedName, PDO::PARAM_STR);
 	$stmt->bindValue(':qualified_feed_source', $qualifiedFeedName, PDO::PARAM_STR);
 	$stmt->bindValue(':unqualified_feed', $unqualifiedFeedName, PDO::PARAM_STR);
+	$stmt->bindValue(':recovered_feed', $recoveredFeedName, PDO::PARAM_STR);
+	$stmt->bindValue(':comment_feed_like', $commentFeedLike, PDO::PARAM_STR);
 	$stmt->bindValue(':limit', $limit, PDO::PARAM_INT);
 	$stmt->execute();
 	$items = $stmt->fetchAll(PDO::FETCH_ASSOC);
+	if (!empty($bucket['location_filter'])) {
+		$locations = rss_configured_locations();
+		$items = array_values(array_filter($items, static fn(array $item): bool => rss_location_allowed_for_high_priority($item, $locations)));
+	}
+	if (!empty($bucket['require_known_payment'])) {
+		$items = array_values(array_filter($items, static fn(array $item): bool => rss_has_known_payment(
+			(string)($item['monthly_amount'] ?? ''),
+			(string)($item['title'] ?? ''),
+			(string)($item['content'] ?? '')
+		)));
+	}
 } catch (Throwable $e) {
-	http_response_code(500);
+	if (rss_serve_cached_feed($cachePath)) {
+		exit;
+	}
+	http_response_code(503);
 	$items = [];
 }
 
 $now = time();
+ob_start();
 echo "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n";
 echo "<rss version=\"2.0\">\n";
 echo "\t<channel>\n";
-echo "\t\t<title>High Priority Reddit Leads</title>\n";
-echo "\t\t<link>http://127.0.0.1/rss-leads-high-priority.php</link>\n";
-echo "\t\t<description>AI-classified high priority Reddit leads from FreshRSS.</description>\n";
+echo "\t\t<title>" . rss_text((string)$bucket['title']) . "</title>\n";
+echo "\t\t<link>http://127.0.0.1/rss-leads-high-priority.php" . ($bucketKey === 'high' ? '' : '?bucket=' . rss_text($bucketKey)) . "</link>\n";
+echo "\t\t<description>" . rss_text((string)$bucket['description']) . "</description>\n";
 echo "\t\t<lastBuildDate>" . date(DATE_RSS, $now) . "</lastBuildDate>\n";
 
 foreach ($items as $item) {
 	$link = (string)$item['link'];
 	$summary = trim((string)$item['summary']);
 	$content = rss_compact_html((string)$item['content']);
+	$priorityLabel = rss_priority_label((string)($item['priority'] ?? 'high'));
 	$monthlyAmount = rss_resolve_monthly_amount((string)($item['monthly_amount'] ?? ''), (string)$item['title'], (string)$item['content']);
 	$jobType = rss_job_type_label((string)($item['job_type'] ?? ''));
-	$description = '<p><strong>AI high priority:</strong> ' . htmlspecialchars($summary, ENT_QUOTES | ENT_HTML5, 'UTF-8') . '</p>'
+	$description = '<p><strong>AI ' . htmlspecialchars($priorityLabel, ENT_QUOTES | ENT_HTML5, 'UTF-8') . ':</strong> ' . htmlspecialchars($summary, ENT_QUOTES | ENT_HTML5, 'UTF-8') . '</p>'
 		. '<p><strong>Estimated monthly amount:</strong> ' . htmlspecialchars(rss_monthly_amount_label($monthlyAmount), ENT_QUOTES | ENT_HTML5, 'UTF-8') . '</p>'
 		. '<p><strong>Job type:</strong> ' . htmlspecialchars($jobType === '' ? 'unknown' : $jobType, ENT_QUOTES | ENT_HTML5, 'UTF-8') . '</p>'
 		. $content;
 	echo "\t\t<item>\n";
 	echo "\t\t\t<title>" . rss_text((string)$item['title']) . "</title>\n";
 	echo "\t\t\t<link>" . rss_text($link) . "</link>\n";
-	echo "\t\t\t<guid isPermaLink=\"false\">" . rss_text(rss_high_priority_guid($link)) . "</guid>\n";
+	echo "\t\t\t<guid isPermaLink=\"false\">" . rss_text(rss_bucket_guid($bucket, $link)) . "</guid>\n";
 	echo "\t\t\t<pubDate>" . date(DATE_RSS, (int)$item['date']) . "</pubDate>\n";
 	$author = rss_author_label((string)($item['author'] ?? ''));
 	if ($author !== '') {
@@ -234,3 +426,8 @@ foreach ($items as $item) {
 
 echo "\t</channel>\n";
 echo "</rss>\n";
+$rss = (string)ob_get_clean();
+if (http_response_code() < 400) {
+	rss_write_cache($cachePath, $rss);
+}
+echo $rss;

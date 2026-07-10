@@ -17,15 +17,19 @@ if (!$allowModelFallbacks && !empty($refineModels)) {
 	$refineModels = array_slice($refineModels, 0, 1);
 	$models = array_values(array_unique(array_merge($refineModels, [$gemmaModel])));
 }
-$promptVersion = 'gemma_flash_monthly_job_type_scam_v4';
+$promptVersion = 'gemma_flash_monthly_job_type_scam_double_check_v7';
 $batchSize = max(1, min(20, (int)(getenv('AI_FILTER_BATCH_SIZE') ?: 20)));
 $gemmaFirstPassBatchLimit = strpos($gemmaModel, 'gemma-') === 0 ? 1 : 20;
 $gemmaFirstPassBatchSize = max(1, min($gemmaFirstPassBatchLimit, (int)(getenv('AI_GEMMA_FIRST_PASS_BATCH_SIZE') ?: 1)));
 $gemmaFirstPassRequestsPerRun = max(0, min(50, (int)(getenv('AI_GEMMA_FIRST_PASS_REQUESTS_PER_RUN') ?: 3)));
 $flashLiteRefineBatchSize = max(1, min(20, (int)(getenv('AI_FLASH_LITE_REFINE_BATCH_SIZE') ?: 4)));
+$priorityFirstPassModel = normalize_model_id(getenv('AI_PRIORITY_FIRST_PASS_MODEL') ?: $gemmaModel);
+$prioritySecondPassModel = normalize_model_id(getenv('AI_PRIORITY_SECOND_PASS_MODEL') ?: $gemmaModel);
+$priorityArbiterModel = normalize_model_id(getenv('AI_PRIORITY_ARBITER_MODEL') ?: ($refineModels[1] ?? ($refineModels[0] ?? 'gemini-3-flash')));
+$priorityArbiterBatchSize = max(1, min(50, (int)(getenv('AI_PRIORITY_ARBITER_BATCH_SIZE') ?: 20)));
 $contentChars = max(200, min(2400, (int)(getenv('AI_FILTER_CONTENT_CHARS') ?: 900)));
 $jobTypeOptionLimit = max(1, min(50, (int)(getenv('AI_JOB_TYPE_OPTION_LIMIT') ?: 25)));
-$intervalSeconds = max(30, min(86400, (int)(getenv('AI_FILTER_INTERVAL_SECONDS') ?: 180)));
+$intervalSeconds = max(10, min(86400, (int)(getenv('AI_FILTER_INTERVAL_SECONDS') ?: 20)));
 $lookbackDays = max(1, min(90, (int)(getenv('AI_FILTER_LOOKBACK_DAYS') ?: 14)));
 $quotaCooldownSeconds = max(300, min(86400, (int)(getenv('AI_FILTER_QUOTA_COOLDOWN_SECONDS') ?: 21600)));
 $dailyRequestBudget = max(0, min(100000, (int)(getenv('AI_FILTER_DAILY_REQUEST_BUDGET') ?: 0)));
@@ -35,6 +39,9 @@ $statePath = getenv('AI_FILTER_STATE_FILE') ?: "/var/www/FreshRSS/data/users/{$u
 $highPrioritySyncPath = '/opt/rss-leads-stack/scripts/sync-freshrss-high-priority.php';
 if (is_file($highPrioritySyncPath)) {
 	require_once $highPrioritySyncPath;
+}
+if (!defined('RSS_LEADS_RECOVERED_FEED')) {
+	define('RSS_LEADS_RECOVERED_FEED', 'Recovered Reddit Leads - AI classified history');
 }
 
 function normalize_model_id(string $model): string {
@@ -139,6 +146,14 @@ function record_error(array &$state, string $stage, string $type, string $messag
 
 function record_request(array &$state, array $attempt, bool $ok, ?int $retryDelay = null): void {
 	$status = (int)($attempt['status'] ?? 0);
+	$model = (string)($attempt['model'] ?? '');
+	$usage = is_array($attempt['usage'] ?? null) ? $attempt['usage'] : [];
+	$promptTokens = max(0, (int)($usage['prompt_tokens'] ?? 0));
+	$candidateTokens = max(0, (int)($usage['candidate_tokens'] ?? 0));
+	$cachedTokens = max(0, (int)($usage['cached_tokens'] ?? 0));
+	$thoughtsTokens = max(0, (int)($usage['thoughts_tokens'] ?? 0));
+	$toolUsePromptTokens = max(0, (int)($usage['tool_use_prompt_tokens'] ?? 0));
+	$totalTokens = max(0, (int)($usage['total_tokens'] ?? 0));
 	$type = 'ok';
 	if (!$ok) {
 		if ($status === 429) {
@@ -156,17 +171,56 @@ function record_request(array &$state, array $attempt, bool $ok, ?int $retryDela
 
 	$event = [
 		'at' => time(),
-		'model' => (string)($attempt['model'] ?? ''),
+		'model' => $model,
 		'status' => $status,
 		'ok' => $ok,
 		'type' => $type,
 		'error' => error_excerpt((string)($attempt['error'] ?? '')),
 		'retry_delay_seconds' => $retryDelay,
+		'tokens' => [
+			'prompt' => $promptTokens,
+			'candidate' => $candidateTokens,
+			'cached' => $cachedTokens,
+			'thoughts' => $thoughtsTokens,
+			'tool_use_prompt' => $toolUsePromptTokens,
+			'total' => $totalTokens,
+		],
 	];
+	if ((string)($usage['service_tier'] ?? '') !== '') {
+		$event['service_tier'] = (string)$usage['service_tier'];
+	}
 	push_limited($state, 'requests', $event, 80);
 	bump_counter($state, 'request_counts', 'total');
 	bump_counter($state, 'request_counts', $ok ? 'success' : 'failed');
 	bump_counter($state, 'request_counts', $type);
+	if ($ok && $totalTokens > 0) {
+		bump_counter($state, 'token_counts', 'requests_with_usage');
+		bump_counter($state, 'token_counts', 'prompt', $promptTokens);
+		bump_counter($state, 'token_counts', 'candidate', $candidateTokens);
+		bump_counter($state, 'token_counts', 'cached', $cachedTokens);
+		bump_counter($state, 'token_counts', 'thoughts', $thoughtsTokens);
+		bump_counter($state, 'token_counts', 'tool_use_prompt', $toolUsePromptTokens);
+		bump_counter($state, 'token_counts', 'total', $totalTokens);
+		if ($model !== '') {
+			if (!isset($state['token_counts_by_model']) || !is_array($state['token_counts_by_model'])) {
+				$state['token_counts_by_model'] = [];
+			}
+			if (!isset($state['token_counts_by_model'][$model]) || !is_array($state['token_counts_by_model'][$model])) {
+				$state['token_counts_by_model'][$model] = [];
+			}
+			foreach ([
+				'requests_with_usage' => 1,
+				'prompt' => $promptTokens,
+				'candidate' => $candidateTokens,
+				'cached' => $cachedTokens,
+				'thoughts' => $thoughtsTokens,
+				'tool_use_prompt' => $toolUsePromptTokens,
+				'total' => $totalTokens,
+			] as $key => $amount) {
+				$state['token_counts_by_model'][$model][$key] = (int)($state['token_counts_by_model'][$model][$key] ?? 0) + (int)$amount;
+			}
+		}
+	}
 }
 
 function budget_key(int $timestamp): string {
@@ -352,6 +406,10 @@ start_run($state, $runStarted, $intervalSeconds, [
 	'models' => $models,
 	'gemma_model' => $gemmaModel,
 	'refine_models' => $refineModels,
+	'priority_first_pass_model' => $priorityFirstPassModel,
+	'priority_second_pass_model' => $prioritySecondPassModel,
+	'priority_arbiter_model' => $priorityArbiterModel,
+	'priority_arbiter_batch_size' => $priorityArbiterBatchSize,
 	'gemma_first_pass_batch_size' => $gemmaFirstPassBatchSize,
 	'gemma_first_pass_requests_per_run' => $gemmaFirstPassRequestsPerRun,
 	'flash_lite_refine_batch_size' => $flashLiteRefineBatchSize,
@@ -412,9 +470,40 @@ function subreddit_from_url(string $url): string {
 }
 
 
+function normalize_priority(string $priority): string {
+	$priority = mb_strtolower(trim($priority), 'UTF-8');
+	$priority = preg_replace('/[\s-]+/u', '_', $priority) ?? $priority;
+	if (in_array($priority, ['xhigh', 'extra_high', 'very_high'], true)) {
+		return 'x_high';
+	}
+	if (in_array($priority, ['not_hire', 'not_hiring_lead'], true)) {
+		return 'not_hiring';
+	}
+	return $priority;
+}
+
+function valid_priorities(): array {
+	return ['low', 'medium', 'high', 'x_high', 'not_hiring'];
+}
+
+function priority_has_budget(string $priority): bool {
+	return in_array($priority, ['medium', 'high', 'x_high'], true);
+}
+
+function priority_rank(string $priority): int {
+	return match ($priority) {
+		'x_high' => 4,
+		'high' => 3,
+		'medium' => 2,
+		'low' => 1,
+		'not_hiring' => -1,
+		default => 0,
+	};
+}
+
 
 function normalize_monthly_amount(string $value, string $priority): string {
-	if ($priority !== 'high') {
+	if (!priority_has_budget($priority)) {
 		return '';
 	}
 	$value = html_entity_decode(strip_tags($value), ENT_QUOTES | ENT_HTML5, 'UTF-8');
@@ -476,12 +565,78 @@ function estimate_monthly_amount_from_text(string $title, string $content): stri
 	return 'unknown';
 }
 
+function money_floor_priority_from_text(string $title, string $content): ?string {
+	$text = compact_text($title . ' ' . $content, 2400);
+	$money = '[$]\s*([0-9][0-9,]*(?:\.[0-9]+)?)\s*([kKmM]?)';
+	$range = $money . '(?:\s*(?:-|\x{2013}|to)\s*[$]?\s*([0-9][0-9,]*(?:\.[0-9]+)?)\s*([kKmM]?))?';
+	$patterns = [
+		['~' . $range . '\s*(?:/hr|/hour|per hour|hourly)\b~iu', static fn(float $max): bool => $max > 5],
+		['~' . $range . '\s*(?:/mo|/month|per month|monthly)\b~iu', static fn(float $max): bool => $max >= 200],
+		['~' . $range . '\s*(?:/wk|/week|per week|weekly)\b~iu', static fn(float $max): bool => ($max * 4.33) >= 200],
+		['~' . $range . '\s*(?:/yr|/year|per year|yearly|annual|annually|salary)\b~iu', static fn(float $max): bool => ($max / 12) >= 200],
+		['~(?:budget|pay|paid|payment|rate)[^$]{0,24}' . $range . '~iu', static fn(float $max): bool => $max >= 200],
+	];
+	foreach ($patterns as [$pattern, $isMediumOrBetter]) {
+		if (preg_match($pattern, $text, $match) !== 1) {
+			continue;
+		}
+		$min = parse_money_value($match[1], $match[2] ?? '');
+		$max = isset($match[3]) && $match[3] !== '' ? parse_money_value($match[3], $match[4] ?? '') : $min;
+		if ($max < $min) {
+			[$min, $max] = [$max, $min];
+		}
+		if ($isMediumOrBetter($max)) {
+			return 'medium';
+		}
+	}
+	return null;
+}
+
+function apply_money_priority_floor(string $priority, array $group): string {
+	if ($priority === 'not_hiring' || priority_rank($priority) >= priority_rank('medium')) {
+		return $priority;
+	}
+	$floor = money_floor_priority_from_text((string)($group['title'] ?? ''), (string)($group['text'] ?? ''));
+	if ($floor !== null && priority_rank($floor) > priority_rank($priority)) {
+		return $floor;
+	}
+	return $priority;
+}
+
 function monthly_amount_for_result(array $result, array $group, string $priority): string {
 	$monthlyAmount = normalize_monthly_amount((string)($result['monthly_amount'] ?? ''), $priority);
-	if ($priority === 'high' && $monthlyAmount === 'unknown') {
+	if (priority_has_budget($priority) && $monthlyAmount === 'unknown') {
 		$monthlyAmount = estimate_monthly_amount_from_text((string)($group['title'] ?? ''), (string)($group['text'] ?? ''));
 	}
 	return $monthlyAmount;
+}
+
+function payment_is_known(string $monthlyAmount): bool {
+	$monthlyAmount = trim(mb_strtolower($monthlyAmount, 'UTF-8'));
+	return $monthlyAmount !== '' && $monthlyAmount !== 'unknown';
+}
+
+function enforce_high_requires_known_payment(string $priority, string $monthlyAmount): string {
+	if (in_array($priority, ['high', 'x_high'], true) && !payment_is_known($monthlyAmount)) {
+		return 'medium';
+	}
+	return $priority;
+}
+
+function finalize_priority_and_amount(array $result, array $group): array {
+	$priority = normalize_priority((string)($result['priority'] ?? 'low'));
+	if (!in_array($priority, valid_priorities(), true)) {
+		$priority = 'low';
+	}
+	$priority = apply_money_priority_floor($priority, $group);
+	$monthlyAmount = monthly_amount_for_result($result, $group, $priority);
+	$priority = enforce_high_requires_known_payment($priority, $monthlyAmount);
+	if (!priority_has_budget($priority)) {
+		$monthlyAmount = '';
+	} elseif ($priority === 'medium' && $monthlyAmount === '') {
+		$monthlyAmount = 'unknown';
+	}
+	return [$priority, $monthlyAmount];
 }
 
 function normalize_job_type(string $value, string $priority): string {
@@ -579,6 +734,56 @@ function scam_likelihood_for_result(array $result): int {
 	return max(0, min(100, (int)round((float)$result['scam_likelihood'])));
 }
 
+function ai_tag_value(string $value, string $fallback = 'unknown'): string {
+	$value = html_entity_decode(strip_tags($value), ENT_QUOTES | ENT_HTML5, 'UTF-8');
+	$value = mb_strtolower($value, 'UTF-8');
+	$value = str_replace('&', 'and', $value);
+	$value = preg_replace('/\s+/u', '_', $value) ?? $value;
+	$value = preg_replace('/[^a-z0-9$.,:+\/_-]+/u', '', $value) ?? $value;
+	$value = trim($value, '_');
+	return $value === '' ? $fallback : $value;
+}
+
+function scam_likelihood_tag(int $score): string {
+	if ($score >= 70) {
+		return 'scam:high';
+	}
+	if ($score >= 35) {
+		return 'scam:medium';
+	}
+	return 'scam:low';
+}
+
+function tags_with_ai_labels(string $tags, string $priority, string $monthlyAmount, string $jobType, int $scamLikelihood): string {
+	$existing = preg_split('/\s+/', trim($tags)) ?: [];
+	$merged = [];
+	foreach ($existing as $tag) {
+		$tag = trim($tag);
+		$lowerTag = mb_strtolower($tag, 'UTF-8');
+		if (
+			$tag === ''
+			|| str_starts_with($lowerTag, 'priority:')
+			|| str_starts_with($lowerTag, 'monthly:')
+			|| str_starts_with($lowerTag, 'job:')
+			|| str_starts_with($lowerTag, 'scam:')
+		) {
+			continue;
+		}
+		$merged[$tag] = true;
+	}
+	$merged['priority:' . ai_tag_value($priority)] = true;
+	if ($monthlyAmount !== '') {
+		$merged['monthly:' . ai_tag_value($monthlyAmount)] = true;
+	}
+	if ($jobType !== '') {
+		$merged['job:' . ai_tag_value($jobType)] = true;
+	}
+	if ($scamLikelihood > 0) {
+		$merged[scam_likelihood_tag($scamLikelihood)] = true;
+	}
+	return implode(' ', array_keys($merged));
+}
+
 function job_type_slug(string $jobType): string {
 	$slug = mb_strtolower($jobType, 'UTF-8');
 	$slug = str_replace('&', ' and ', $slug);
@@ -598,7 +803,8 @@ function run_classification_batch(
 	array $modelDailyLimits,
 	array $jobTypeOptions,
 	int $quotaCooldownSeconds,
-	int $intervalSeconds
+	int $intervalSeconds,
+	string $payloadMode = 'classify'
 ): array {
 	foreach ($models as $candidateModel) {
 		$expectedIds = array_values(array_map(static fn(array $item): string => (string)($item['id'] ?? ''), $items));
@@ -637,7 +843,10 @@ function run_classification_batch(
 		consume_model_daily_request($state, $candidateModel, $modelDailyLimits);
 		save_state($statePath, $state);
 		$gemini = new GeminiClient($apiKey, $quotaCooldownSeconds, $intervalSeconds);
-		$attempt = $gemini->call($candidateModel, GeminiClient::buildPayload($items, $candidateModel, $jobTypeOptions));
+		$payload = $payloadMode === 'arbitrate'
+			? GeminiClient::buildArbitrationPayload($items, $candidateModel, $jobTypeOptions)
+			: GeminiClient::buildPayload($items, $candidateModel, $jobTypeOptions);
+		$attempt = $gemini->call($candidateModel, $payload);
 		if ($attempt['raw'] !== '' && $attempt['status'] >= 200 && $attempt['status'] < 300) {
 			record_request($state, $attempt, true);
 			$response = json_decode($attempt['raw'], true);
@@ -681,6 +890,115 @@ function run_classification_batch(
 		}
 	}
 	return ['results' => null, 'model' => null];
+}
+
+function results_by_id(array $results): array {
+	$mapped = [];
+	foreach ($results as $result) {
+		if (!is_array($result)) {
+			continue;
+		}
+		$id = (string)($result['id'] ?? '');
+		if ($id !== '') {
+			$mapped[$id] = $result;
+		}
+	}
+	return $mapped;
+}
+
+function result_priority(array $result): string {
+	$priority = normalize_priority((string)($result['priority'] ?? 'low'));
+	return in_array($priority, valid_priorities(), true) ? $priority : 'low';
+}
+
+function build_arbiter_items(array $itemsById, array $firstById, array $secondById): array {
+	$arbiterItems = [];
+	foreach ($itemsById as $id => $item) {
+		if (!isset($firstById[$id], $secondById[$id])) {
+			continue;
+		}
+		if (result_priority($firstById[$id]) === result_priority($secondById[$id])) {
+			continue;
+		}
+		$arbiterItem = $item;
+		$arbiterItem['check_1'] = [
+			'summary' => (string)($firstById[$id]['summary'] ?? ''),
+			'priority' => result_priority($firstById[$id]),
+			'monthly_amount' => (string)($firstById[$id]['monthly_amount'] ?? ''),
+			'job_type' => (string)($firstById[$id]['job_type'] ?? ''),
+			'scam_likelihood' => scam_likelihood_for_result($firstById[$id]),
+		];
+		$arbiterItem['check_2'] = [
+			'summary' => (string)($secondById[$id]['summary'] ?? ''),
+			'priority' => result_priority($secondById[$id]),
+			'monthly_amount' => (string)($secondById[$id]['monthly_amount'] ?? ''),
+			'job_type' => (string)($secondById[$id]['job_type'] ?? ''),
+			'scam_likelihood' => scam_likelihood_for_result($secondById[$id]),
+		];
+		$arbiterItems[] = $arbiterItem;
+	}
+	return $arbiterItems;
+}
+
+function double_check_classification_batch(
+	string $apiKey,
+	string $firstModel,
+	string $secondModel,
+	string $arbiterModel,
+	array $items,
+	array &$state,
+	string $statePath,
+	int $dailyRequestBudget,
+	array $modelDailyLimits,
+	array $jobTypeOptions,
+	int $quotaCooldownSeconds,
+	int $intervalSeconds
+): array {
+	$firstRun = run_classification_batch($apiKey, [$firstModel], $items, $state, $statePath, $dailyRequestBudget, $modelDailyLimits, $jobTypeOptions, $quotaCooldownSeconds, $intervalSeconds);
+	$secondRun = run_classification_batch($apiKey, [$secondModel], $items, $state, $statePath, $dailyRequestBudget, $modelDailyLimits, $jobTypeOptions, $quotaCooldownSeconds, $intervalSeconds);
+	$firstById = results_by_id(is_array($firstRun['results'] ?? null) ? $firstRun['results'] : []);
+	$secondById = results_by_id(is_array($secondRun['results'] ?? null) ? $secondRun['results'] : []);
+	$itemsById = [];
+	foreach ($items as $item) {
+		$id = (string)($item['id'] ?? '');
+		if ($id !== '') {
+			$itemsById[$id] = $item;
+		}
+	}
+
+	$arbiterById = [];
+	$arbiterItems = build_arbiter_items($itemsById, $firstById, $secondById);
+	$arbiterRun = ['results' => [], 'model' => null];
+	if (!empty($arbiterItems)) {
+		$arbiterRun = run_classification_batch($apiKey, [$arbiterModel], $arbiterItems, $state, $statePath, $dailyRequestBudget, $modelDailyLimits, $jobTypeOptions, $quotaCooldownSeconds, $intervalSeconds, 'arbitrate');
+		$arbiterById = results_by_id(is_array($arbiterRun['results'] ?? null) ? $arbiterRun['results'] : []);
+	}
+
+	$final = [];
+	$conflicts = 0;
+	foreach (array_keys($itemsById) as $id) {
+		if (isset($firstById[$id], $secondById[$id]) && result_priority($firstById[$id]) !== result_priority($secondById[$id])) {
+			$conflicts++;
+			if (isset($arbiterById[$id])) {
+				$final[] = $arbiterById[$id] + ['_decision_model' => (string)($arbiterRun['model'] ?? $arbiterModel), '_decision_source' => 'arbiter'];
+				continue;
+			}
+		}
+		if (isset($secondById[$id])) {
+			$final[] = $secondById[$id] + ['_decision_model' => (string)($secondRun['model'] ?? $secondModel), '_decision_source' => 'second_pass'];
+		} elseif (isset($firstById[$id])) {
+			$final[] = $firstById[$id] + ['_decision_model' => (string)($firstRun['model'] ?? $firstModel), '_decision_source' => 'first_pass'];
+		}
+	}
+
+	return [
+		'results' => $final,
+		'first_model' => (string)($firstRun['model'] ?? $firstModel),
+		'second_model' => (string)($secondRun['model'] ?? $secondModel),
+		'arbiter_model' => (string)($arbiterRun['model'] ?? ''),
+		'conflicts' => $conflicts,
+		'arbitrated' => count($arbiterById),
+	];
 }
 
 function ai_table_columns(PDO $db): array {
@@ -749,7 +1067,7 @@ function migrate_ai_table(PDO $db): void {
 		entry_id INTEGER PRIMARY KEY,
 		link TEXT NOT NULL,
 		summary TEXT NOT NULL,
-		priority TEXT NOT NULL CHECK(priority IN ("low", "medium", "high", "not_hiring")),
+		priority TEXT NOT NULL CHECK(priority IN ("low", "medium", "high", "x_high", "not_hiring")),
 		monthly_amount TEXT NOT NULL DEFAULT \'\',
 		job_type TEXT NOT NULL DEFAULT \'\',
 		scam_likelihood INTEGER NOT NULL DEFAULT 0 CHECK(scam_likelihood >= 0 AND scam_likelihood <= 100),
@@ -770,7 +1088,8 @@ function migrate_ai_table(PDO $db): void {
 	$hasJobType = isset($columns['job_type']);
 	$hasScamLikelihood = isset($columns['scam_likelihood']);
 	$prioritySupportsNotHiring = is_string($existingSql) && strpos($existingSql, '"not_hiring"') !== false;
-	if ($prioritySupportsNotHiring) {
+	$prioritySupportsXHigh = is_string($existingSql) && strpos($existingSql, '"x_high"') !== false;
+	if ($prioritySupportsNotHiring && $prioritySupportsXHigh) {
 		if (!$hasMonthlyAmount) {
 			$db->exec('ALTER TABLE rss_leads_ai ADD COLUMN monthly_amount TEXT NOT NULL DEFAULT \'\'');
 		}
@@ -803,7 +1122,12 @@ function migrate_ai_table(PDO $db): void {
 	$jobTypeSelect = $hasJobType ? 'job_type' : "'' AS job_type";
 	$scamLikelihoodSelect = $hasScamLikelihood ? 'scam_likelihood' : '0 AS scam_likelihood';
 	$db->exec('INSERT INTO rss_leads_ai_new (entry_id, link, summary, priority, monthly_amount, job_type, scam_likelihood, model, input_hash, created_at, updated_at)
-		SELECT entry_id, link, summary, priority, ' . $monthlyAmountSelect . ', ' . $jobTypeSelect . ', ' . $scamLikelihoodSelect . ', model, input_hash, created_at, updated_at FROM rss_leads_ai');
+		SELECT entry_id, link, summary,
+			CASE
+				WHEN priority IN ("low", "medium", "high", "x_high", "not_hiring") THEN priority
+				ELSE "low"
+			END AS priority,
+			' . $monthlyAmountSelect . ', ' . $jobTypeSelect . ', ' . $scamLikelihoodSelect . ', model, input_hash, created_at, updated_at FROM rss_leads_ai');
 	$db->exec('DROP TABLE rss_leads_ai');
 	$db->exec('ALTER TABLE rss_leads_ai_new RENAME TO rss_leads_ai');
 	$db->commit();
@@ -833,6 +1157,7 @@ function sync_high_priority_category_if_available(PDO $db, array &$state): array
 try {
 	$db = new PDO('sqlite:' . $dbPath);
 	$db->setAttribute(PDO::ATTR_ERRMODE, PDO::ERRMODE_EXCEPTION);
+	$db->exec('PRAGMA busy_timeout = 10000');
 	migrate_ai_table($db);
 	$db->exec('CREATE INDEX IF NOT EXISTS idx_rss_leads_ai_priority ON rss_leads_ai(priority, updated_at)');
 	$db->exec('CREATE INDEX IF NOT EXISTS idx_rss_leads_ai_link ON rss_leads_ai(link)');
@@ -872,11 +1197,13 @@ try {
 			   AND e.date >= :since
 			   AND (f.name LIKE "Reddit Leads%" OR e.link LIKE "%reddit.com/r/%")
 			   AND f.name != "High Priority Reddit Leads"
+			   AND f.name != :recovered_feed
 			 ORDER BY e.date DESC
 			 LIMIT :limit'
 		);
 		$stmt->bindValue(':prompt_hash_prefix', $promptVersion . ':%', PDO::PARAM_STR);
 		$stmt->bindValue(':since', $since, PDO::PARAM_INT);
+		$stmt->bindValue(':recovered_feed', RSS_LEADS_RECOVERED_FEED, PDO::PARAM_STR);
 		$stmt->bindValue(':limit', $batchSize * 6, PDO::PARAM_INT);
 		$stmt->execute();
 	}
@@ -928,11 +1255,20 @@ $upsertJobType = $db->prepare(
 		usage_count = usage_count + 1,
 		last_seen_at = excluded.last_seen_at'
 );
+$selectEntryTags = $db->prepare('SELECT tags FROM entry WHERE id = :entry_id');
+$updateEntryTags = $db->prepare('UPDATE entry SET tags = :tags, lastUserModified = :updated_at WHERE id = :entry_id');
 $routeByLink = $db->prepare(
 	'UPDATE entry
 	 SET is_read = CASE
-		WHEN id_feed IN (SELECT id FROM feed WHERE name = "Reddit Leads - unqualified deep-research communities") THEN :unqualified_read
-		WHEN id_feed IN (SELECT id FROM feed WHERE name = "Reddit Leads - qualified deep-research communities") THEN :qualified_read
+		WHEN id_feed IN (
+			SELECT id FROM feed
+			WHERE name IN (
+				"Reddit Leads - all communities",
+				"Reddit Leads - qualified deep-research communities",
+				"Reddit Leads - unqualified deep-research communities"
+			)
+			   OR name LIKE "Reddit Leads - comments - %"
+		) THEN :source_read
 		ELSE is_read
 	 END,
 	 lastUserModified = :updated_at
@@ -940,13 +1276,15 @@ $routeByLink = $db->prepare(
 	   AND id_feed IN (
 		SELECT id FROM feed
 		WHERE name IN (
-			"Reddit Leads - qualified deep-research communities",
-			"Reddit Leads - unqualified deep-research communities"
-		)
+				"Reddit Leads - all communities",
+				"Reddit Leads - qualified deep-research communities",
+				"Reddit Leads - unqualified deep-research communities"
+			)
+		   OR name LIKE "Reddit Leads - comments - %"
 	   )'
 );
 
-function save_classification(PDOStatement $upsert, PDOStatement $routeByLink, PDOStatement $upsertJobType, array $group, string $link, string $summary, string $priority, string $monthlyAmount, string $jobType, int $scamLikelihood, string $model, string $hash, int $now): int {
+function save_classification(PDOStatement $upsert, PDOStatement $routeByLink, PDOStatement $upsertJobType, PDOStatement $selectEntryTags, PDOStatement $updateEntryTags, array $group, string $link, string $summary, string $priority, string $monthlyAmount, string $jobType, int $scamLikelihood, string $model, string $hash, int $now): int {
 	$saved = 0;
 	foreach ($group['ids'] as $entryId) {
 		$upsert->execute([
@@ -962,13 +1300,18 @@ function save_classification(PDOStatement $upsert, PDOStatement $routeByLink, PD
 			':created_at' => $now,
 			':updated_at' => $now,
 	]);
-	$saved++;
+		$selectEntryTags->execute([':entry_id' => $entryId]);
+		$currentTags = $selectEntryTags->fetchColumn();
+		$updateEntryTags->execute([
+			':entry_id' => $entryId,
+			':tags' => tags_with_ai_labels(is_string($currentTags) ? $currentTags : '', $priority, $monthlyAmount, $jobType, $scamLikelihood),
+			':updated_at' => $now,
+		]);
+		$saved++;
 	}
 	$isNotHiring = $priority === 'not_hiring';
-	$isHighPriority = $priority === 'high';
 	$routeByLink->execute([
-		':qualified_read' => ($isNotHiring || $isHighPriority) ? 1 : 0,
-		':unqualified_read' => $isNotHiring ? 0 : 1,
+		':source_read' => $isNotHiring ? 1 : 0,
 		':updated_at' => $now,
 		':link' => $link,
 	]);
@@ -988,18 +1331,21 @@ if (empty($entryIds)) {
 			   AND e.date >= :since
 			   AND (f.name LIKE "Reddit Leads%" OR e.link LIKE "%reddit.com/r/%")
 			   AND f.name != "High Priority Reddit Leads"
+			   AND f.name != :recovered_feed
 			 ORDER BY
 			   CASE ai.priority
-				 WHEN "high" THEN 0
-				 WHEN "medium" THEN 1
-				 WHEN "low" THEN 2
-				 ELSE 3
+				 WHEN "x_high" THEN 0
+				 WHEN "high" THEN 1
+				 WHEN "medium" THEN 2
+				 WHEN "low" THEN 3
+				 ELSE 4
 			   END,
 			   ai.updated_at ASC
 			 LIMIT :limit'
 		);
 		$refineStmt->bindValue(':gemma_hash_prefix', $promptVersion . ':gemma:%', PDO::PARAM_STR);
 		$refineStmt->bindValue(':since', $since, PDO::PARAM_INT);
+		$refineStmt->bindValue(':recovered_feed', RSS_LEADS_RECOVERED_FEED, PDO::PARAM_STR);
 		$refineStmt->bindValue(':limit', $flashLiteRefineBatchSize * 4, PDO::PARAM_INT);
 		$refineStmt->execute();
 		$refineRows = $refineStmt->fetchAll(PDO::FETCH_ASSOC);
@@ -1040,7 +1386,7 @@ foreach ($groups as $link => $group) {
 	}
 	$hash = $promptVersion . ':local:' . hash('sha256', json_encode($group, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE));
 	try {
-		$saved += save_classification($upsert, $routeByLink, $upsertJobType, $group, $link, $localSummary, 'not_hiring', '', '', 0, 'local-heuristic', $hash, $now);
+		$saved += save_classification($upsert, $routeByLink, $upsertJobType, $selectEntryTags, $updateEntryTags, $group, $link, $localSummary, 'not_hiring', '', '', 0, 'local-heuristic', $hash, $now);
 		$priorityCounts['not_hiring'] = ($priorityCounts['not_hiring'] ?? 0) + 1;
 		$locallyClassified++;
 	} catch (Throwable $e) {
@@ -1141,8 +1487,8 @@ if (!empty($refineGroups)) {
 			continue;
 		}
 		$summary = compact_text((string)($result['summary'] ?? ''), 180);
-		$priority = strtolower((string)($result['priority'] ?? 'low'));
-		if (!in_array($priority, ['low', 'medium', 'high', 'not_hiring'], true) || $summary === '') {
+		$priority = normalize_priority((string)($result['priority'] ?? 'low'));
+		if (!in_array($priority, valid_priorities(), true) || $summary === '') {
 			record_error($state, 'gemini_response', 'invalid_refine_classification', 'Flash Lite returned an invalid priority or empty summary.', [
 				'priority' => $priority,
 				'id' => $id,
@@ -1153,7 +1499,7 @@ if (!empty($refineGroups)) {
 		if ($group === null) {
 			continue;
 		}
-		$monthlyAmount = monthly_amount_for_result($result, $group, $priority);
+		[$priority, $monthlyAmount] = finalize_priority_and_amount($result, $group);
 		$jobType = job_type_for_result($result, $group, $priority);
 		$scamLikelihood = scam_likelihood_for_result($result);
 		$priorityCounts[$priority] = ($priorityCounts[$priority] ?? 0) + 1;
@@ -1162,7 +1508,7 @@ if (!empty($refineGroups)) {
 		}
 		$hash = $promptVersion . ':refine:' . hash('sha256', json_encode($group, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE));
 		try {
-			$saved += save_classification($upsert, $routeByLink, $upsertJobType, $group, $link, $summary, $priority, $monthlyAmount, $jobType, $scamLikelihood, $refineModel ?: 'gemini-refine', $hash, $now);
+			$saved += save_classification($upsert, $routeByLink, $upsertJobType, $selectEntryTags, $updateEntryTags, $group, $link, $summary, $priority, $monthlyAmount, $jobType, $scamLikelihood, $refineModel ?: 'gemini-refine', $hash, $now);
 			$refinedLinks++;
 		} catch (Throwable $e) {
 			record_error($state, 'database', 'refine_save_failed', $e->getMessage(), [
@@ -1178,6 +1524,13 @@ $gemmaSentItems = 0;
 $gemmaReturnedItems = 0;
 $gemmaCachedLinks = 0;
 $gemmaBatches = 0;
+$priorityConflictCount = 0;
+$priorityArbitratedCount = 0;
+$priorityArbiterSentItems = 0;
+$priorityArbiterReturnedItems = 0;
+$pendingGemmaResults = [];
+$pendingArbiterItems = [];
+$pendingArbiterContext = [];
 $gemmaQueue = array_slice($geminiGroups, 0, $gemmaFirstPassRequestsPerRun * $gemmaFirstPassBatchSize, true);
 while (!empty($gemmaQueue) && $gemmaBatches < $gemmaFirstPassRequestsPerRun) {
 	$batchGroups = array_slice($gemmaQueue, 0, $gemmaFirstPassBatchSize, true);
@@ -1201,50 +1554,124 @@ while (!empty($gemmaQueue) && $gemmaBatches < $gemmaFirstPassRequestsPerRun) {
 	$gemmaSentItems += count($gemmaItems);
 	$gemmaBatches++;
 	$jobTypeOptions = load_job_type_options($db, $jobTypeOptionLimit);
-	$gemmaRun = run_classification_batch($apiKey, [$gemmaModel], $gemmaItems, $state, $statePath, $dailyRequestBudget, $modelDailyLimits, $jobTypeOptions, $quotaCooldownSeconds, $intervalSeconds);
-	$gemmaResults = is_array($gemmaRun['results']) ? $gemmaRun['results'] : [];
-	$gemmaReturnedItems += count($gemmaResults);
-	if (empty($gemmaResults)) {
+	$firstRun = run_classification_batch($apiKey, [$priorityFirstPassModel], $gemmaItems, $state, $statePath, $dailyRequestBudget, $modelDailyLimits, $jobTypeOptions, $quotaCooldownSeconds, $intervalSeconds);
+	$secondRun = run_classification_batch($apiKey, [$prioritySecondPassModel], $gemmaItems, $state, $statePath, $dailyRequestBudget, $modelDailyLimits, $jobTypeOptions, $quotaCooldownSeconds, $intervalSeconds);
+	$firstById = results_by_id(is_array($firstRun['results'] ?? null) ? $firstRun['results'] : []);
+	$secondById = results_by_id(is_array($secondRun['results'] ?? null) ? $secondRun['results'] : []);
+	$gemmaReturnedItems += count($firstById) + count($secondById);
+	if (empty($firstById) && empty($secondById)) {
 		break;
 	}
-	foreach ($gemmaResults as $result) {
-		$id = is_array($result) ? (string)($result['id'] ?? '') : '';
+	foreach ($gemmaItems as $item) {
+		$id = (string)($item['id'] ?? '');
 		$link = $gemmaIdToLink[$id] ?? null;
 		if ($link === null) {
 			continue;
 		}
-		$summary = compact_text((string)($result['summary'] ?? ''), 180);
-		$priority = strtolower((string)($result['priority'] ?? 'low'));
-		if (!in_array($priority, ['low', 'medium', 'high', 'not_hiring'], true) || $summary === '') {
-			record_error($state, 'gemini_response', 'invalid_gemma_classification', 'Gemma returned an invalid priority or empty summary.', [
-				'priority' => $priority,
-				'id' => $id,
-			]);
-			continue;
-		}
-		$group = $batchGroups[$link] ?? null;
-		if ($group === null) {
-			continue;
-		}
-		$monthlyAmount = monthly_amount_for_result($result, $group, $priority);
-		$jobType = job_type_for_result($result, $group, $priority);
-		$scamLikelihood = scam_likelihood_for_result($result);
-		$priorityCounts[$priority] = ($priorityCounts[$priority] ?? 0) + 1;
-		if ($jobType !== '') {
-			$jobTypeCounts[$jobType] = ($jobTypeCounts[$jobType] ?? 0) + 1;
-		}
-		$hash = $promptVersion . ':gemma:' . hash('sha256', json_encode($group, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE));
-		try {
-			$saved += save_classification($upsert, $routeByLink, $upsertJobType, $group, $link, $summary, $priority, $monthlyAmount, $jobType, $scamLikelihood, $gemmaModel, $hash, $now);
-			$gemmaCachedLinks++;
-		} catch (Throwable $e) {
-			record_error($state, 'database', 'gemma_save_failed', $e->getMessage(), [
+		if (isset($firstById[$id], $secondById[$id]) && result_priority($firstById[$id]) !== result_priority($secondById[$id])) {
+			$priorityConflictCount++;
+			$arbiterId = 'a' . count($pendingArbiterItems);
+			$arbiterItem = $item;
+			$arbiterItem['id'] = $arbiterId;
+			$arbiterItem['check_1'] = [
+				'summary' => (string)($firstById[$id]['summary'] ?? ''),
+				'priority' => result_priority($firstById[$id]),
+				'monthly_amount' => (string)($firstById[$id]['monthly_amount'] ?? ''),
+				'job_type' => (string)($firstById[$id]['job_type'] ?? ''),
+				'scam_likelihood' => scam_likelihood_for_result($firstById[$id]),
+			];
+			$arbiterItem['check_2'] = [
+				'summary' => (string)($secondById[$id]['summary'] ?? ''),
+				'priority' => result_priority($secondById[$id]),
+				'monthly_amount' => (string)($secondById[$id]['monthly_amount'] ?? ''),
+				'job_type' => (string)($secondById[$id]['job_type'] ?? ''),
+				'scam_likelihood' => scam_likelihood_for_result($secondById[$id]),
+			];
+			$pendingArbiterItems[] = $arbiterItem;
+			$pendingArbiterContext[$arbiterId] = [
 				'link' => $link,
-				'priority' => $priority,
-			]);
+				'group' => $batchGroups[$link] ?? null,
+			];
+			continue;
 		}
+		$result = $secondById[$id] ?? ($firstById[$id] ?? null);
+		if (!is_array($result)) {
+			continue;
+		}
+		$pendingGemmaResults[] = [
+			'result' => $result + [
+				'_decision_model' => isset($secondById[$id]) ? (string)($secondRun['model'] ?? $prioritySecondPassModel) : (string)($firstRun['model'] ?? $priorityFirstPassModel),
+				'_decision_source' => isset($secondById[$id]) ? 'second_pass' : 'first_pass',
+			],
+			'link' => $link,
+			'group' => $batchGroups[$link] ?? null,
+		];
 	}
 	$jobTypeOptions = load_job_type_options($db, $jobTypeOptionLimit);
+}
+
+foreach (array_chunk($pendingArbiterItems, $priorityArbiterBatchSize) as $arbiterChunk) {
+	$priorityArbiterSentItems += count($arbiterChunk);
+	$jobTypeOptions = load_job_type_options($db, $jobTypeOptionLimit);
+	$arbiterRun = run_classification_batch($apiKey, [$priorityArbiterModel], $arbiterChunk, $state, $statePath, $dailyRequestBudget, $modelDailyLimits, $jobTypeOptions, $quotaCooldownSeconds, $intervalSeconds, 'arbitrate');
+	$arbiterResults = is_array($arbiterRun['results'] ?? null) ? $arbiterRun['results'] : [];
+	$priorityArbiterReturnedItems += count($arbiterResults);
+	foreach ($arbiterResults as $result) {
+		if (!is_array($result)) {
+			continue;
+		}
+		$arbiterId = (string)($result['id'] ?? '');
+		$context = $pendingArbiterContext[$arbiterId] ?? null;
+		if (!is_array($context)) {
+			continue;
+		}
+		$pendingGemmaResults[] = [
+			'result' => $result + [
+				'_decision_model' => (string)($arbiterRun['model'] ?? $priorityArbiterModel),
+				'_decision_source' => 'arbiter',
+			],
+			'link' => (string)$context['link'],
+			'group' => $context['group'] ?? null,
+		];
+		$priorityArbitratedCount++;
+	}
+}
+
+foreach ($pendingGemmaResults as $item) {
+	$result = is_array($item['result'] ?? null) ? $item['result'] : [];
+	$link = (string)($item['link'] ?? '');
+	$group = is_array($item['group'] ?? null) ? $item['group'] : null;
+	if ($link === '' || $group === null) {
+		continue;
+	}
+	$summary = compact_text((string)($result['summary'] ?? ''), 180);
+	$priority = normalize_priority((string)($result['priority'] ?? 'low'));
+	if (!in_array($priority, valid_priorities(), true) || $summary === '') {
+		record_error($state, 'gemini_response', 'invalid_double_check_classification', 'Double-check classification returned an invalid priority or empty summary.', [
+			'priority' => $priority,
+			'link' => $link,
+		]);
+		continue;
+	}
+	[$priority, $monthlyAmount] = finalize_priority_and_amount($result, $group);
+	$jobType = job_type_for_result($result, $group, $priority);
+	$scamLikelihood = scam_likelihood_for_result($result);
+	$priorityCounts[$priority] = ($priorityCounts[$priority] ?? 0) + 1;
+	if ($jobType !== '') {
+		$jobTypeCounts[$jobType] = ($jobTypeCounts[$jobType] ?? 0) + 1;
+	}
+	$hash = $promptVersion . ':double:' . hash('sha256', json_encode($group, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE));
+	$modelUsed = (string)($result['_decision_model'] ?? $prioritySecondPassModel);
+	$decisionSource = (string)($result['_decision_source'] ?? 'double_check');
+	try {
+		$saved += save_classification($upsert, $routeByLink, $upsertJobType, $selectEntryTags, $updateEntryTags, $group, $link, $summary, $priority, $monthlyAmount, $jobType, $scamLikelihood, $modelUsed . ':' . $decisionSource, $hash, $now);
+		$gemmaCachedLinks++;
+	} catch (Throwable $e) {
+		record_error($state, 'database', 'double_check_save_failed', $e->getMessage(), [
+			'link' => $link,
+			'priority' => $priority,
+		]);
+	}
 }
 
 $message = "Saved {$saved} AI classifications.";
@@ -1266,10 +1693,18 @@ finish_run($state, 'success', time(), $message, [
 	'gemma_first_pass_sent_items' => $gemmaSentItems,
 	'gemma_first_pass_returned_items' => $gemmaReturnedItems,
 	'gemma_cached_links' => $gemmaCachedLinks,
+	'priority_first_pass_model' => $priorityFirstPassModel,
+	'priority_second_pass_model' => $prioritySecondPassModel,
+	'priority_arbiter_model' => $priorityArbiterModel,
+	'priority_arbiter_batch_size' => $priorityArbiterBatchSize,
+	'priority_arbiter_sent_items' => $priorityArbiterSentItems,
+	'priority_arbiter_returned_items' => $priorityArbiterReturnedItems,
+	'priority_conflicts' => $priorityConflictCount,
+	'priority_arbitrated' => $priorityArbitratedCount,
 	'sent_items' => $refineSentItems + $gemmaSentItems,
 	'returned_items' => $refineReturnedItems + $gemmaReturnedItems,
 	'saved' => $saved,
-	'model' => $refineModel ?: ($gemmaCachedLinks > 0 ? $gemmaModel : 'local-heuristic'),
+	'model' => $refineModel ?: ($gemmaCachedLinks > 0 ? $prioritySecondPassModel : 'local-heuristic'),
 	'daily_budget' => $state['daily_budget'] ?? null,
 	'model_daily_budgets' => $state['model_daily_budgets'] ?? null,
 	'priority_counts' => $priorityCounts,

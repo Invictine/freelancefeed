@@ -9,6 +9,7 @@ $dbPath = getenv('FRESHRSS_DB') ?: "/var/www/FreshRSS/data/users/{$user}/db.sqli
 $statePath = getenv('AI_FILTER_STATE_FILE') ?: "/var/www/FreshRSS/data/users/{$user}/rss_leads_ai_state.json";
 $benchmarkPath = getenv('AI_BENCHMARK_STATE_FILE') ?: "/var/www/FreshRSS/data/users/{$user}/rss_leads_ai_benchmark.json";
 $idsParam = (string)($_GET['ids'] ?? '');
+$includeStatus = (string)($_GET['status'] ?? '') === '1';
 $ids = [];
 foreach (explode(',', $idsParam) as $id) {
 	if (preg_match('/^\d+$/', trim($id))) {
@@ -69,17 +70,37 @@ function read_benchmark_report(string $path): ?array {
 				'model' => (string)($row['model'] ?? ''),
 				'success' => (int)($row['success'] ?? 0),
 				'failed' => (int)($row['failed'] ?? 0),
+				'latency_ms' => (int)($row['latency_ms'] ?? 0),
 				'avg_latency_ms' => (int)($row['avg_latency_ms'] ?? 0),
+				'http_status' => (int)($row['http_status'] ?? 0),
+				'error' => (string)($row['error'] ?? ''),
+				'prompt_tokens' => (int)($row['prompt_tokens'] ?? 0),
+				'candidate_tokens' => (int)($row['candidate_tokens'] ?? 0),
+				'total_tokens' => (int)($row['total_tokens'] ?? 0),
+				'tokens_per_item' => round((float)($row['tokens_per_item'] ?? 0), 1),
 				'avg_quality' => round((float)($row['avg_quality'] ?? 0), 2),
 				'avg_priority_score' => round((float)($row['avg_priority_score'] ?? 0), 2),
 				'avg_summary_score' => round((float)($row['avg_summary_score'] ?? 0), 2),
 				'avg_scam_score' => round((float)($row['avg_scam_score'] ?? 0), 2),
 				'judge_status' => (int)($row['judge_status'] ?? 0),
+				'judge_latency_ms' => (int)($row['judge_latency_ms'] ?? 0),
+				'judge_error' => (string)($row['judge_error'] ?? ''),
 				'judge_fallback' => (string)($row['judge_fallback'] ?? ''),
 				'judge_model_used' => (string)($row['judge_model_used'] ?? ''),
+				'parse_note' => (string)($row['parse_note'] ?? ''),
+				'output_excerpt' => mb_substr((string)($row['output_excerpt'] ?? ''), 0, 1200, 'UTF-8'),
 				'notes' => (string)($row['notes'] ?? ''),
 			];
 		}, is_array($decoded['models'] ?? null) ? $decoded['models'] : [])),
+		'items' => array_values(array_map(static function ($row): array {
+			$row = is_array($row) ? $row : [];
+			return [
+				'id' => (string)($row['id'] ?? ''),
+				'entry_id' => (string)($row['entry_id'] ?? ''),
+				'title' => mb_substr((string)($row['title'] ?? ''), 0, 180, 'UTF-8'),
+				'link' => (string)($row['link'] ?? ''),
+			];
+		}, array_slice(is_array($decoded['items'] ?? null) ? $decoded['items'] : [], 0, 30))),
 	];
 }
 
@@ -108,6 +129,8 @@ function public_ai_state(array $state): array {
 		'model_daily_budgets',
 		'requests',
 		'errors',
+		'token_counts',
+		'token_counts_by_model',
 		'config',
 	];
 	$public = [];
@@ -123,6 +146,36 @@ function public_ai_state(array $state): array {
 		$public['errors'] = array_slice($public['errors'], 0, 20);
 	}
 	return $public;
+}
+
+function ai_prompt_quality(array $state): array {
+	$requestCounts = is_array($state['request_counts'] ?? null) ? $state['request_counts'] : [];
+	$errorCounts = is_array($state['error_counts'] ?? null) ? $state['error_counts'] : [];
+	$batch = is_array($state['last_batch'] ?? null) ? $state['last_batch'] : [];
+	$totalRequests = max(0, (int)($requestCounts['total'] ?? 0));
+	$failedRequests = max(0, (int)($requestCounts['failed'] ?? 0));
+	$invalidJson = max(0, (int)($errorCounts['invalid_json'] ?? 0));
+	$invalidClassification = 0;
+	foreach ($errorCounts as $type => $count) {
+		if (strpos((string)$type, 'invalid_') === 0) {
+			$invalidClassification += max(0, (int)$count);
+		}
+	}
+	$gemmaReturned = max(0, (int)($batch['gemma_first_pass_returned_items'] ?? 0));
+	$gemmaSent = max(0, (int)($batch['gemma_first_pass_sent_items'] ?? 0));
+	$gemmaExpected = $gemmaSent * 2;
+	$conflicts = max(0, (int)($batch['priority_conflicts'] ?? 0));
+	$arbitrated = max(0, (int)($batch['priority_arbitrated'] ?? 0));
+	return [
+		'request_failure_rate' => $totalRequests > 0 ? round(($failedRequests / $totalRequests) * 100, 1) : 0,
+		'invalid_json_count' => $invalidJson,
+		'invalid_classification_count' => $invalidClassification,
+		'json_failure_rate' => $totalRequests > 0 ? round(($invalidJson / $totalRequests) * 100, 1) : 0,
+		'gemma_return_rate' => $gemmaExpected > 0 ? round(($gemmaReturned / $gemmaExpected) * 100, 1) : 0,
+		'priority_conflicts' => $conflicts,
+		'priority_arbitrated' => $arbitrated,
+		'arbitration_coverage' => $conflicts > 0 ? round(($arbitrated / $conflicts) * 100, 1) : 100,
+	];
 }
 
 function ai_table_has_column(PDO $db, string $name): bool {
@@ -154,8 +207,12 @@ function latest_ai_by_link_sql(bool $hasMonthlyAmount, bool $hasJobType, bool $h
 }
 
 try {
-	$response['status']['state'] = public_ai_state(read_ai_state($statePath));
-	$response['status']['benchmark'] = read_benchmark_report($benchmarkPath);
+	if ($includeStatus) {
+		$rawState = read_ai_state($statePath);
+		$response['status']['state'] = public_ai_state($rawState);
+		$response['status']['prompt_quality'] = ai_prompt_quality($rawState);
+		$response['status']['benchmark'] = read_benchmark_report($benchmarkPath);
+	}
 
 	$db = new PDO('sqlite:' . $dbPath);
 	$db->setAttribute(PDO::ATTR_ERRMODE, PDO::ERRMODE_EXCEPTION);
@@ -170,6 +227,7 @@ try {
 	$hasScamLikelihood = ai_table_has_column($db, 'scam_likelihood');
 	$latestSql = latest_ai_by_link_sql($hasMonthlyAmount, $hasJobType, $hasScamLikelihood);
 
+	if ($includeStatus) {
 	foreach ($db->query('SELECT priority, COUNT(*) AS count FROM (' . $latestSql . ') GROUP BY priority') as $row) {
 		$response['status']['priority_counts'][(string)$row['priority']] = (int)$row['count'];
 		$response['status']['total_classified'] += (int)$row['count'];
@@ -266,6 +324,7 @@ try {
 			'model' => (string)$latest['model'],
 			'updated_at' => (int)$latest['updated_at'],
 		];
+	}
 	}
 
 	if (!empty($ids)) {

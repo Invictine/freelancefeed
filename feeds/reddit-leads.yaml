@@ -11,24 +11,33 @@ defaults:
   ttl_seconds: 60
 
 live_feeds:
-  qualified:
-    title: Reddit Leads - qualified deep-research communities
+  all:
+    title: Reddit Leads - all communities
     category: Reddit Leads
-    behavior: Unqualified posts are auto-marked read so likely leads remain unread.
-  unqualified:
-    title: Reddit Leads - unqualified deep-research communities
-    category: Unqualified Reddit Leads
-    behavior: Likely qualified posts are auto-marked read so review/noise remains unread.
+    behavior: AI-classified low, medium, high, and x_high leads remain visible; not_hiring items are marked read and hidden from the Reddit Leads category view.
   url: https://www.reddit.com/r/forhire+FindVideoEditors+VideoEditingJobs+videography+socialmedia+SocialMediaMarketing+n8n+jobbit+VideoEditors+creators+HireaWriter+podcasting+freelance_forhire+slavelabour+DoneDirtCheap+B2BForHire+SocialMediaManagers+PromptEngineering+Automate/new/.rss
   reason: FreshRSS receives HTTP 429 when it fetches many Reddit feeds back-to-back, so the live subscription uses one multireddit RSS request.
-  qualified_mark_read_filters:
+  legacy_qualified_mark_read_filters:
     - intitle:/\[for hire\]/i OR intitle:/\[hire me\]/i OR intitle:/^hire (a|an) /i OR intitle:"for hire only" OR intitle:"hire me" OR intitle:portfolio
     - intitle:/\[offer\]/i OR intitle:"self promotion" OR intitle:advertisement
     - intitle:unpaid OR intitle:volunteer OR intitle:exposure OR intitle:free
     - intitle:"how do I sell" OR intitle:"looking for clients" OR intitle:"lead generation" OR intitle:"appointment setter"
     - '!intitle:/\[hiring\]/i !intitle:/\[paid\]/i !intitle:/\[task\]/i !intitle:hiring !intitle:paid !intitle:hire !intitle:needed !intitle:looking !intitle:developer !intitle:automation !intitle:editor !intitle:manager !intitle:"social media" !intitle:"podcast editor" !intitle:"will pay" !intitle:prompt !intitle:cofounder !intitle:help'
-  unqualified_mark_read_filters:
+  legacy_unqualified_mark_read_filters:
     - intitle:/\[hiring\]/i OR intitle:/\[paid\]/i OR intitle:/\[task\]/i OR intitle:hiring OR intitle:paid OR intitle:needed OR intitle:looking OR intitle:developer OR intitle:automation OR intitle:editor OR intitle:manager OR intitle:"social media" OR intitle:"podcast editor" OR intitle:"will pay" OR intitle:prompt OR intitle:cofounder OR intitle:help
+
+comment_thread_feeds:
+  config: feeds/reddit-comment-threads.json
+  endpoint: http://127.0.0.1/rss-leads-reddit-comments.php?source={source_id}
+  category: Reddit Leads
+  behavior: Each enabled source finds the latest matching recurring subreddit post and exposes its comments as RSS items for FreshRSS, AI filtering, and high-priority routing.
+  initial_sources:
+    - source_id: socialmedia-weekly-hiring
+      subreddit: socialmedia
+      thread_type: weekly hiring thread
+    - source_id: socialmediamarketing-monthly-hiring
+      subreddit: SocialMediaMarketing
+      thread_type: monthly hiring thread
 
 subreddits:
   - subreddit: forhire

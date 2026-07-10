@@ -8,6 +8,7 @@ $judgeApiKey = getenv('AI_BENCHMARK_HIGH_INTELLIGENCE_API_KEY') ?: (getenv('ANTI
 $benchmarkPath = getenv('AI_BENCHMARK_STATE_FILE') ?: "/var/www/FreshRSS/data/users/{$user}/rss_leads_ai_benchmark.json";
 $sampleSize = max(1, min(30, (int)(getenv('AI_BENCHMARK_SAMPLE_SIZE') ?: 8)));
 $contentChars = max(200, min(2400, (int)(getenv('AI_BENCHMARK_CONTENT_CHARS') ?: 900)));
+$candidateTimeoutSeconds = max(30, min(300, (int)(getenv('AI_BENCHMARK_CANDIDATE_TIMEOUT_SECONDS') ?: 180)));
 $highIntelligenceModel = normalize_model_id(getenv('AI_BENCHMARK_HIGH_INTELLIGENCE_MODEL') ?: (getenv('ANTIGRAVITY_JUDGE_MODEL') ?: 'gemini-3.1-pro-preview'));
 $highIntelligenceAgent = trim((string)(getenv('AI_BENCHMARK_HIGH_INTELLIGENCE_AGENT') ?: (getenv('ANTIGRAVITY_JUDGE_AGENT') ?: '')));
 $highIntelligenceCli = trim((string)(getenv('AI_BENCHMARK_HIGH_INTELLIGENCE_CLI') ?: (getenv('ANTIGRAVITY_CLI') ?: '')));
@@ -143,10 +144,63 @@ function extract_json(string $text): mixed {
 	return null;
 }
 
+function extract_json_values(string $text): array {
+	$values = [];
+	$decoded = json_decode($text, true);
+	if (is_array($decoded)) {
+		$values[] = $decoded;
+	}
+	$length = strlen($text);
+	for ($start = 0; $start < $length; $start++) {
+		$open = $text[$start] ?? '';
+		if ($open !== '[' && $open !== '{') {
+			continue;
+		}
+		$close = $open === '[' ? ']' : '}';
+		$depth = 0;
+		$inString = false;
+		$escaped = false;
+		for ($i = $start; $i < $length; $i++) {
+			$char = $text[$i];
+			if ($inString) {
+				if ($escaped) {
+					$escaped = false;
+				} elseif ($char === '\\') {
+					$escaped = true;
+				} elseif ($char === '"') {
+					$inString = false;
+				}
+				continue;
+			}
+			if ($char === '"') {
+				$inString = true;
+				continue;
+			}
+			if ($char === $open) {
+				$depth++;
+			} elseif ($char === $close) {
+				$depth--;
+				if ($depth === 0) {
+					$candidate = substr($text, $start, $i - $start + 1);
+					$decoded = json_decode($candidate, true);
+					if (is_array($decoded)) {
+						$values[] = $decoded;
+					}
+					break;
+				}
+			}
+		}
+	}
+	return $values;
+}
+
 function build_classification_payload(array $items, string $model): array {
-	$prompt = "Classify each Reddit lead. Return JSON array only with id, summary, monthly_amount, priority, job_type, and scam_likelihood.\n"
-		. "priority must be high, medium, low, or not_hiring. summary <= 20 words. scam_likelihood is 0-100.\n"
-		. "monthly_amount is only for high priority; use \"\" for non-high. Items: "
+	$prompt = "Classify each Reddit lead. Return only valid JSON, with no Markdown or explanation.\n"
+		. "Return a bare JSON array. If you cannot return a bare array, return one object with key results containing the rows.\n"
+		. "Required row fields: id, summary, monthly_amount, priority, job_type, scam_likelihood.\n"
+		. "Every input item must have one output row with the same id. priority must be x_high, high, medium, low, or not_hiring. summary <= 20 words. scam_likelihood is 0-100.\n"
+		. "monthly_amount is for medium, high, and x_high priority: estimate monthly USD value like \"$3,000/mo\" from budget, pay, rate, or salary. Convert hourly, weekly, annual, or project pay to monthly equivalent when possible. Use \"unknown\" when no money is stated. Use \"\" only for low or not_hiring.\n"
+		. "Any real hiring post mentioning more than $5/hr or at least $200/month must be at least medium. high and x_high require known stated payment; if payment is unknown, use medium at most. x_high is reserved for exceptional paid buyer posts around $75/hr, $8,000/mo, $2,000/wk, $96,000/yr, $5,000 project budget, or very direct urgent AI automation, chatbot/LLM, web/app, workflow automation, or computer-vision work. Items: "
 		. json_encode($items, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE);
 	$payload = [
 		'contents' => [[
@@ -167,7 +221,7 @@ function build_classification_payload(array $items, string $model): array {
 					'id' => ['type' => 'STRING'],
 					'summary' => ['type' => 'STRING'],
 					'monthly_amount' => ['type' => 'STRING'],
-					'priority' => ['type' => 'STRING', 'enum' => ['low', 'medium', 'high', 'not_hiring']],
+					'priority' => ['type' => 'STRING', 'enum' => ['low', 'medium', 'high', 'x_high', 'not_hiring']],
 					'job_type' => ['type' => 'STRING'],
 					'scam_likelihood' => ['type' => 'INTEGER'],
 				],
@@ -178,7 +232,128 @@ function build_classification_payload(array $items, string $model): array {
 	return $payload;
 }
 
-function call_generate_content(string $apiKey, string $model, array $payload): array {
+function is_benchmark_output_row(mixed $value): bool {
+	return is_array($value)
+		&& isset($value['id'])
+		&& is_scalar($value['id'])
+		&& isset($value['summary'])
+		&& is_scalar($value['summary'])
+		&& isset($value['priority'])
+		&& is_scalar($value['priority']);
+}
+
+function normalize_benchmark_outputs(mixed $decodedOutput): array {
+	if (!is_array($decodedOutput)) {
+		return [];
+	}
+	if (is_benchmark_output_row($decodedOutput)) {
+		return [$decodedOutput];
+	}
+	foreach (['results', 'items', 'classifications', 'outputs', 'leads', 'data'] as $key) {
+		if (isset($decodedOutput[$key]) && is_array($decodedOutput[$key])) {
+			$nested = normalize_benchmark_outputs($decodedOutput[$key]);
+			if (!empty($nested)) {
+				return $nested;
+			}
+		}
+	}
+	$rows = [];
+	foreach ($decodedOutput as $key => $value) {
+		if (!is_array($value)) {
+			continue;
+		}
+		if (!isset($value['id']) && is_string($key) && preg_match('/^s\d+$/', $key) === 1) {
+			$value['id'] = $key;
+		}
+		if (is_benchmark_output_row($value)) {
+			$rows[] = $value;
+			continue;
+		}
+		foreach (normalize_benchmark_outputs($value) as $row) {
+			$rows[] = $row;
+		}
+	}
+	return $rows;
+}
+
+function parsed_outputs_by_id(string $text, array $expectedIds): array {
+	$expected = array_fill_keys($expectedIds, true);
+	$best = [];
+	$bestMatches = -1;
+	foreach (extract_json_values($text) as $decodedOutput) {
+		$rows = normalize_benchmark_outputs($decodedOutput);
+		$outputs = [];
+		$matches = 0;
+		foreach ($rows as $item) {
+			$id = (string)$item['id'];
+			if ($id === '') {
+				continue;
+			}
+			$outputs[$id] = $item;
+			if (isset($expected[$id])) {
+				$matches++;
+			}
+		}
+		if ($matches > $bestMatches || ($matches === $bestMatches && count($outputs) > count($best))) {
+			$best = $outputs;
+			$bestMatches = $matches;
+		}
+	}
+	return $best;
+}
+
+function local_validity_judge(array $items, array $outputsById): array {
+	$expectedIds = array_values(array_map(static fn(array $item): string => (string)$item['id'], $items));
+	$expected = array_fill_keys($expectedIds, true);
+	$total = max(1, count($expectedIds));
+	$validPriorities = ['x_high' => true, 'high' => true, 'medium' => true, 'low' => true, 'not_hiring' => true];
+	$rowScores = [];
+	$priorityScores = [];
+	$summaryScores = [];
+	$scamScores = [];
+	foreach ($expectedIds as $id) {
+		$row = $outputsById[$id] ?? null;
+		if (!is_array($row)) {
+			$rowScores[] = 0;
+			$priorityScores[] = 0;
+			$summaryScores[] = 0;
+			$scamScores[] = 0;
+			continue;
+		}
+		$priority = strtolower((string)($row['priority'] ?? ''));
+		$summary = compact_text((string)($row['summary'] ?? ''), 240);
+		$scam = $row['scam_likelihood'] ?? null;
+		$monthlyAmount = trim((string)($row['monthly_amount'] ?? ''));
+		$jobType = trim((string)($row['job_type'] ?? ''));
+		$summaryWords = preg_split('/\s+/u', trim($summary)) ?: [];
+		$priorityOk = isset($validPriorities[$priority]) ? 10 : 0;
+		$summaryOk = $summary !== '' ? ($summaryWords && count($summaryWords) <= 24 ? 10 : 7) : 0;
+		$scamOk = is_numeric($scam) && (int)$scam >= 0 && (int)$scam <= 100 ? 10 : 0;
+		$monthlyKnown = $monthlyAmount !== '' && strtolower($monthlyAmount) !== 'unknown';
+		$monthlyOk = in_array($priority, ['high', 'x_high'], true)
+			? ($monthlyKnown ? 10 : 0)
+			: (in_array($priority, ['medium'], true) || $monthlyAmount === '' ? 10 : 6);
+		$jobOk = $priority === 'not_hiring' || $jobType !== '' ? 10 : 6;
+		$priorityScores[] = $priorityOk;
+		$summaryScores[] = $summaryOk;
+		$scamScores[] = $scamOk;
+		$rowScores[] = ($priorityOk + $summaryOk + $scamOk + $monthlyOk + $jobOk) / 5;
+	}
+	$avg = static fn(array $values): float => count($values) ? array_sum($values) / count($values) : 0.0;
+	$unexpected = array_diff(array_keys($outputsById), array_keys($expected));
+	$coveragePenalty = count($unexpected) > 0 ? min(2, count($unexpected) / $total) : 0;
+	$overall = max(0, $avg($rowScores) - $coveragePenalty);
+	return [
+		'overall_quality' => round($overall, 2),
+		'priority_score' => round($avg($priorityScores), 2),
+		'summary_score' => round($avg($summaryScores), 2),
+		'scam_score' => round($avg($scamScores), 2),
+		'notes' => 'High-intelligence judge unavailable; using local structural validity fallback, not semantic quality.',
+		'judge_model_used' => 'local-validity',
+	];
+}
+
+function call_generate_content(string $apiKey, string $model, array $payload, int $timeoutSeconds = 180): array {
 	$url = 'https://generativelanguage.googleapis.com/v1beta/models/' . rawurlencode($model) . ':generateContent?key=' . rawurlencode($apiKey);
 	$started = microtime(true);
 	$ch = curl_init($url);
@@ -187,17 +362,24 @@ function call_generate_content(string $apiKey, string $model, array $payload): a
 		CURLOPT_HTTPHEADER => ['Content-Type: application/json'],
 		CURLOPT_POSTFIELDS => json_encode($payload, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE),
 		CURLOPT_RETURNTRANSFER => true,
-		CURLOPT_TIMEOUT => 90,
+		CURLOPT_TIMEOUT => $timeoutSeconds,
 	]);
 	$raw = curl_exec($ch);
 	$status = (int)curl_getinfo($ch, CURLINFO_RESPONSE_CODE);
 	$error = curl_error($ch);
 	curl_close($ch);
+	$decoded = is_string($raw) ? json_decode($raw, true) : null;
+	$usage = is_array($decoded) && is_array($decoded['usageMetadata'] ?? null) ? $decoded['usageMetadata'] : [];
 	return [
 		'status' => $status,
 		'raw' => is_string($raw) ? $raw : '',
 		'error' => $error,
 		'latency_ms' => (int)round((microtime(true) - $started) * 1000),
+		'tokens' => [
+			'prompt' => (int)($usage['promptTokenCount'] ?? 0),
+			'candidate' => (int)($usage['candidatesTokenCount'] ?? 0),
+			'total' => (int)($usage['totalTokenCount'] ?? 0),
+		],
 	];
 }
 
@@ -282,6 +464,7 @@ function call_high_intelligence_cli(string $command, string $prompt, int $timeou
 function call_judge(string $apiKey, string $judgeModel, string $judgeAgent, string $highIntelligenceCli, string $highIntelligenceSdkCommand, array $items, array $outputsById, string $candidateModel): array {
 	$prompt = "Evaluate this Reddit lead classifier output. Return JSON object only with keys overall_quality, priority_score, summary_score, scam_score, notes.\n"
 		. "Scores are 0-10. Reward concise useful summaries, correct hiring/not_hiring separation, reasonable priority, reusable job_type, and calibrated scam_likelihood.\n"
+		. "Priority rules: any real hiring post with stated pay above $5/hr or at least $200/month must be at least medium; high and x_high require known stated payment after conversion; unknown-payment posts must not be high or x_high. Penalize stale JSON, missing ids, empty summaries, and high/x_high with unknown monthly_amount.\n"
 		. "Input items: " . json_encode($items, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE) . "\n"
 		. "Candidate model: " . $candidateModel . "\n"
 		. "Candidate output: " . json_encode(array_values($outputsById), JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE);
@@ -421,21 +604,16 @@ $report = [
 	'models' => [],
 	'items' => $items,
 ];
+$expectedIds = array_values(array_map(static fn(array $item): string => (string)$item['id'], $items));
 
 foreach ($models as $model) {
-	$attempt = call_generate_content($apiKey, $model, build_classification_payload($items, $model));
+	$attempt = call_generate_content($apiKey, $model, build_classification_payload($items, $model), $candidateTimeoutSeconds);
 	$outputs = [];
+	$outputText = '';
 	if ($attempt['status'] >= 200 && $attempt['status'] < 300 && $attempt['raw'] !== '') {
 		$decodedResponse = json_decode($attempt['raw'], true);
-		$text = is_array($decodedResponse) ? gemini_text($decodedResponse) : '';
-		$decodedOutput = extract_json($text);
-		if (is_array($decodedOutput)) {
-			foreach ($decodedOutput as $item) {
-				if (is_array($item) && isset($item['id'])) {
-					$outputs[(string)$item['id']] = $item;
-				}
-			}
-		}
+		$outputText = is_array($decodedResponse) ? gemini_text($decodedResponse) : '';
+		$outputs = parsed_outputs_by_id($outputText !== '' ? $outputText : $attempt['raw'], $expectedIds);
 	}
 	$judge = !empty($outputs)
 		? call_judge($judgeApiKey, $highIntelligenceModel, $highIntelligenceAgent, $highIntelligenceCli, $highIntelligenceSdkCommand, $items, $outputs, $model)
@@ -443,10 +621,23 @@ foreach ($models as $model) {
 	$score = is_array($judge['score'] ?? null) ? $judge['score'] : [];
 	$judgeStatus = (int)($judge['status'] ?? 0);
 	$hasJudgeScore = isset($score['overall_quality']) || isset($score['priority_score']) || isset($score['summary_score']) || isset($score['scam_score']);
+	$usedLocalJudgeFallback = false;
+	if (!$hasJudgeScore && !empty($outputs)) {
+		$score = local_validity_judge($items, $outputs);
+		$hasJudgeScore = true;
+		$usedLocalJudgeFallback = true;
+	}
 	$judgeFailureNote = !$hasJudgeScore && $judgeStatus !== 0
 		? 'High-intelligence judge failed status ' . $judgeStatus . '; check AI_BENCHMARK_HIGH_INTELLIGENCE_PROVIDER, AI_BENCHMARK_HIGH_INTELLIGENCE_MODEL, AI_BENCHMARK_HIGH_INTELLIGENCE_AGENT, AI_BENCHMARK_HIGH_INTELLIGENCE_SDK_COMMAND, or AI_BENCHMARK_HIGH_INTELLIGENCE_CLI.'
 		: '';
 	$success = count($outputs);
+	$parseNote = $attempt['status'] >= 200 && $attempt['status'] < 300 && $success === 0
+		? 'HTTP 200 but no benchmark rows could be parsed from candidate output.'
+		: '';
+	$scoreNotes = trim((string)($score['notes'] ?? ''));
+	if ($scoreNotes === '') {
+		$scoreNotes = $judgeFailureNote !== '' ? $judgeFailureNote : $parseNote;
+	}
 	$report['models'][] = [
 		'model' => $model,
 		'success' => $success,
@@ -455,6 +646,12 @@ foreach ($models as $model) {
 		'avg_latency_ms' => $success > 0 ? (int)round($attempt['latency_ms'] / $success) : 0,
 		'http_status' => (int)$attempt['status'],
 		'error' => (string)$attempt['error'],
+		'prompt_tokens' => (int)($attempt['tokens']['prompt'] ?? 0),
+		'candidate_tokens' => (int)($attempt['tokens']['candidate'] ?? 0),
+		'total_tokens' => (int)($attempt['tokens']['total'] ?? 0),
+		'tokens_per_item' => count($items) > 0 ? round(((int)($attempt['tokens']['total'] ?? 0)) / count($items), 1) : 0,
+		'output_excerpt' => compact_text($outputText !== '' ? $outputText : (string)$attempt['raw'], 700),
+		'parse_note' => $parseNote,
 		'avg_quality' => round((float)($score['overall_quality'] ?? 0), 2),
 		'avg_priority_score' => round((float)($score['priority_score'] ?? 0), 2),
 		'avg_summary_score' => round((float)($score['summary_score'] ?? 0), 2),
@@ -462,9 +659,9 @@ foreach ($models as $model) {
 		'judge_status' => $judgeStatus,
 		'judge_latency_ms' => (int)($judge['latency_ms'] ?? 0),
 		'judge_error' => (string)($judge['error'] ?? ''),
-		'judge_fallback' => (string)($judge['fallback'] ?? ''),
+		'judge_fallback' => $usedLocalJudgeFallback ? 'local-validity' : (string)($judge['fallback'] ?? ''),
 		'judge_model_used' => (string)($score['judge_model_used'] ?? ''),
-		'notes' => compact_text((string)($score['notes'] ?? $judgeFailureNote), 220),
+		'notes' => compact_text($scoreNotes, 220),
 	];
 	echo $model . ': success=' . $success . '/' . count($items)
 		. ' avg_latency_ms=' . ($success > 0 ? (int)round($attempt['latency_ms'] / $success) : 0)

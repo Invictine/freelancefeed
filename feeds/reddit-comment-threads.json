@@ -1,0 +1,40 @@
+{
+  "timezone": "Asia/Kolkata",
+  "defaults": {
+    "category": "Reddit Leads",
+    "time": "month",
+    "sort": "new",
+    "search_limit": 25,
+    "max_threads": 2,
+    "max_comments": 80,
+    "min_comment_score": 0,
+    "include_replies": false,
+    "cache_seconds": 60,
+    "user_agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:126.0) Gecko/20100101 Firefox/126.0"
+  },
+  "sources": [
+    {
+      "id": "socialmedia-weekly-hiring",
+      "enabled": true,
+      "subreddit": "socialmedia",
+      "label": "weekly hiring thread",
+      "q": "\"Weekly Hiring Thread\" OR \"Social Media Professionals\"",
+      "title_patterns": [
+        "/Weekly Hiring Thread/i",
+        "/Social Media Professionals/i"
+      ]
+    },
+    {
+      "id": "socialmediamarketing-monthly-hiring",
+      "enabled": true,
+      "subreddit": "SocialMediaMarketing",
+      "label": "monthly hiring thread",
+      "q": "\"Monthly Hiring Thread\" OR \"Hiring Thread for Social Media Marketers\"",
+      "time": "year",
+      "title_patterns": [
+        "/Monthly Hiring Thread/i",
+        "/Hiring Thread/i"
+      ]
+    }
+  ]
+}

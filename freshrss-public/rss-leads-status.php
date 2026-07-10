@@ -13,9 +13,9 @@ if (preg_match('/^[A-Za-z0-9_.-]+$/', $user) !== 1) {
 $dbPath = "/var/www/FreshRSS/data/users/{$user}/db.sqlite";
 $logPath = "/var/www/FreshRSS/data/users/{$user}/log.txt";
 $feedNames = [
-	'Reddit Leads - qualified deep-research communities',
-	'Reddit Leads - unqualified deep-research communities',
+	'Reddit Leads - all communities',
 ];
+$commentFeedLike = 'Reddit Leads - comments - %';
 $now = time();
 
 $response = [
@@ -42,8 +42,8 @@ try {
 	$db->setAttribute(PDO::ATTR_ERRMODE, PDO::ERRMODE_EXCEPTION);
 
 	$placeholders = implode(',', array_fill(0, count($feedNames), '?'));
-	$feed = $db->prepare("SELECT id, name, error, ttl, lastUpdate FROM feed WHERE name IN ($placeholders) ORDER BY priority, id");
-	$feed->execute($feedNames);
+	$feed = $db->prepare("SELECT id, name, error, ttl, lastUpdate FROM feed WHERE name IN ($placeholders) OR name LIKE ? ORDER BY priority, id");
+	$feed->execute(array_merge($feedNames, [$commentFeedLike]));
 	$rows = $feed->fetchAll(PDO::FETCH_ASSOC);
 	if (!empty($rows)) {
 		$lastUpdate = 0;
