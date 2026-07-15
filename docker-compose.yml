@@ -15,10 +15,12 @@ services:
       - freshrss_extensions:/var/www/FreshRSS/extensions
       - ./extensions/RssLeadsStatus:/var/www/FreshRSS/extensions/RssLeadsStatus
       - ./feeds:/opt/rss-leads-stack/feeds:ro
+      - ./scripts/lib:/opt/rss-leads-stack/scripts/lib:ro
       - ./freshrss-public/rss-leads-status.php:/var/www/FreshRSS/p/rss-leads-status.php
       - ./freshrss-public/rss-leads-ai.php:/var/www/FreshRSS/p/rss-leads-ai.php
       - ./freshrss-public/rss-leads-high-priority.php:/var/www/FreshRSS/p/rss-leads-high-priority.php
       - ./freshrss-public/rss-leads-location.php:/var/www/FreshRSS/p/rss-leads-location.php
+      - ./freshrss-public/rss-leads-profile.php:/var/www/FreshRSS/p/rss-leads-profile.php
       - ./freshrss-public/rss-leads-reddit-comments.php:/var/www/FreshRSS/p/rss-leads-reddit-comments.php
 
   ai-filter:

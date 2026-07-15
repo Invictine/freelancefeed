@@ -77,7 +77,7 @@ class GeminiClient {
 			return [
 				'contents' => [[
 					'parts' => [[
-						'text' => "Classify each Reddit lead. Return only valid JSON, with no Markdown or explanation.\nReturn a bare JSON array. If you cannot return a bare array, return one object with key results containing the rows.\nRequired row fields: id, summary, monthly_amount, priority, job_type, scam_likelihood.\nEvery input item must have one output row with the same id. priority must be x_high, high, medium, low, or not_hiring. summary must be 20 words or fewer.\nscam_likelihood must be an integer from 0 to 100 estimating the chance this is a scam or unsafe lead. Raise it for unrealistic pay, vague easy-work promises, payment forwarding, crypto/check schemes, requests for money, account access, off-platform payment, suspicious urgency, or impersonation. Lower it for specific normal paid work with credible details.\nmonthly_amount is for medium, high, and x_high priority: estimate monthly USD value like \"$3,000/mo\" from budget, pay, rate, or salary. Convert hourly, weekly, annual, or project pay to monthly equivalent when possible. Use \"unknown\" when no money is stated. Use \"\" only for low or not_hiring.\nnot_hiring means freelancer offers, hire-me posts, portfolios, job seekers, advice, discussion, showcases, news, spam, or anything not posted by someone hiring for a role/task/vendor.\nx_high means exceptional paid buyer/hiring posts: at least about $75/hr, $8,000/mo, $2,000/wk, $96,000/yr, $5,000 project budget, or a very direct urgent technical lead that strongly matches AI automation, chatbot/LLM, web/app development, workflow automation, or computer-vision work. high means paid urgent/budget/ready hiring below x_high, but high and x_high require known stated payment. If payment is unknown, use medium at most. medium means paid hiring without urgency, urgent hiring without budget, or any real hiring post mentioning more than $5/hr or at least $200/month. low means vague or unpaid but still seeking help.\n" . self::jobTypePromptInstruction($jobTypeOptions) . "\nItems: " . json_encode($items, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE),
+						'text' => "Classify each Reddit lead. Return only valid JSON, with no Markdown or explanation.\nReturn a bare JSON array. Required row fields: id, summary, monthly_amount, priority, job_type, cv_fit, scam_likelihood.\nEvery input item must have one output row with the same id. summary must be 20 words or fewer. cv_fit must be low, high, or extreme by comparing the role with cv_profile_for_all_items when supplied: low means weak/no demonstrated match, high means the portfolio directly demonstrates the core work, extreme means an unusually exact match with multiple directly relevant capabilities or proof points.\nUse these exact deterministic tiers: when cv_profile_for_all_items is supplied, high or extreme cv_fit is x_high and low cv_fit is at least medium; otherwise known monthly value of at least $1,000 is high and lower or unknown value is low. A low portfolio match with known monthly value of at least $1,000 remains high. not_hiring is only for posts not buying/hiring.\nmonthly_amount must be a monthly USD equivalent like \"$3,000/mo\" converted from hourly, weekly, annual, or project pay; use \"unknown\" when unstated. scam_likelihood is an integer 0-100.\n" . self::jobTypePromptInstruction($jobTypeOptions) . "\nItems: " . json_encode($items, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE),
 					]],
 				]],
 				'generationConfig' => [
@@ -114,9 +114,10 @@ class GeminiClient {
 							'enum' => ['low', 'medium', 'high', 'x_high', 'not_hiring'],
 					],
 					'job_type' => ['type' => 'STRING'],
+					'cv_fit' => ['type' => 'STRING', 'enum' => ['low', 'high', 'extreme']],
 					'scam_likelihood' => ['type' => 'INTEGER'],
 				],
-				'required' => ['id', 'summary', 'monthly_amount', 'priority', 'job_type', 'scam_likelihood'],
+				'required' => ['id', 'summary', 'monthly_amount', 'priority', 'job_type', 'cv_fit', 'scam_likelihood'],
 			],
 		];
 		return $payload;
@@ -124,8 +125,8 @@ class GeminiClient {
 
 	public static function buildArbitrationPayload(array $items, string $model, array $jobTypeOptions): array {
 		$maxOutputTokens = 220 + (count($items) * 180);
-		$instruction = "Resolve conflicting Reddit lead classifications. Return only valid JSON array with the same required fields: id, summary, monthly_amount, priority, job_type, scam_likelihood.\n"
-			. "Each item includes the Reddit post plus two prior classifier outputs. Decide the final classification; do not average mechanically. Favor not_hiring only when the poster is not buying/hiring. For real hiring posts, any stated pay above $5/hr or at least $200/month must be at least medium. high and x_high require a known/stated payment after conversion; if payment is unknown, use medium at most. x_high still requires exceptional pay or very direct urgent AI/automation/web/app/computer-vision fit.\n"
+		$instruction = "Resolve conflicting Reddit lead classifications. Return only valid JSON array with fields: id, summary, monthly_amount, priority, job_type, cv_fit, scam_likelihood.\n"
+			. "Compare each role with cv_profile_for_all_items when present. cv_fit is low, high, or extreme. With a supplied portfolio, high/extreme fit=x_high and low fit is at least medium; a low fit with monthly value >=$1,000 remains high. Without a supplied portfolio, monthly value >=$1,000=high and all other buyer leads=low. not_hiring is only for posts not buying/hiring.\n"
 			. self::jobTypePromptInstruction($jobTypeOptions);
 		if (strpos($model, 'gemma-') === 0) {
 			return [
@@ -166,9 +167,10 @@ class GeminiClient {
 								'enum' => ['low', 'medium', 'high', 'x_high', 'not_hiring'],
 							],
 							'job_type' => ['type' => 'STRING'],
+							'cv_fit' => ['type' => 'STRING', 'enum' => ['low', 'high', 'extreme']],
 							'scam_likelihood' => ['type' => 'INTEGER'],
 						],
-						'required' => ['id', 'summary', 'monthly_amount', 'priority', 'job_type', 'scam_likelihood'],
+						'required' => ['id', 'summary', 'monthly_amount', 'priority', 'job_type', 'cv_fit', 'scam_likelihood'],
 					],
 				],
 			],
@@ -354,6 +356,9 @@ class GeminiClient {
 			if (!array_key_exists('scam_likelihood', $item) || !is_numeric($item['scam_likelihood'])) {
 				return false;
 			}
+			if (!in_array((string)($item['cv_fit'] ?? ''), ['low', 'high', 'extreme'], true)) {
+				return false;
+			}
 			$scamLikelihood = (int)$item['scam_likelihood'];
 			if ($scamLikelihood < 0 || $scamLikelihood > 100) {
 				return false;
@@ -372,6 +377,6 @@ class GeminiClient {
 	}
 
 	private static function systemPrompt(array $jobTypeOptions): string {
-		return 'Score Reddit leads. Output JSON array only. Each item: id, summary<=20 words one sentence, monthly_amount, priority x_high|high|medium|low|not_hiring, job_type, scam_likelihood integer 0-100. scam_likelihood is the chance the post is a scam or unsafe lead: high values for unrealistic pay, requests for money, off-platform payment/account access, vague easy-work offers, crypto/check/payment-forwarding, suspicious urgency, or impersonation; low values for specific normal paid work with credible details. monthly_amount is for medium, high, and x_high priority: estimate monthly USD value like "$3,000/mo" from budget/pay/rate; convert hourly weekly annual or project pay to monthly equivalent when possible; use "unknown" if no money is stated; use "" only for low or not_hiring. not_hiring=not posted by someone hiring for a role/task/vendor, including freelancer offers, hire-me posts, portfolio/self-promo, selling services, job seekers, general discussion, advice, showcases, news, or spam. For real buyer/hiring posts: x_high=exceptional paid buyer/hiring lead at about $75/hr, $8,000/mo, $2,000/wk, $96,000/yr, $5,000 project budget, or a very direct urgent technical lead matching AI automation, chatbot/LLM, web/app development, workflow automation, or computer-vision work; high=paid+urgent/budget/ready below x_high, but high/x_high require known stated payment; if payment is unknown use medium at most; medium=paid/no urgency, urgent/no budget, or any real hiring post mentioning more than $5/hr or at least $200/month; low=unpaid/vague but still wants help/hiring. ' . self::jobTypePromptInstruction($jobTypeOptions);
+		return 'Score Reddit leads. Output JSON array only. Each item: id, summary<=20 words, monthly_amount, priority x_high|high|medium|low|not_hiring, job_type, cv_fit low|high|extreme, scam_likelihood 0-100. Compare each role with cv_profile_for_all_items when supplied. low fit means weak/no demonstrated match; high means the portfolio directly demonstrates the core work; extreme means unusually exact fit with multiple relevant proof points. With a supplied portfolio, high/extreme fit=x_high and low fit is at least medium; low fit with monthly USD >=$1,000 remains high. Without a portfolio, monthly USD >=$1,000=high and all other buyer leads=low. not_hiring is only for posts not buying/hiring. Convert hourly, weekly, annual, and project pay to monthly_amount; use unknown when unstated. ' . self::jobTypePromptInstruction($jobTypeOptions);
 	}
 }

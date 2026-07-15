@@ -1,8 +1,8 @@
 # FreshRSS Leads Stack
 
 FreshRSS Leads Stack turns Reddit and RSS sources into a small lead dashboard.
-It watches selected communities, keeps likely hiring posts visible, moves noisy
-posts into a separate review feed, and can use Gemini/Gemma to add short
+It watches selected communities, keeps likely hiring posts visible, marks noisy
+posts read, and can use Gemini/Gemma to add short
 summaries, priority labels, and reusable job-type tags.
 
 The stack is built around FreshRSS, so you still own the feeds and can read them
@@ -13,11 +13,10 @@ from FreshRSS itself or from apps such as FeedFlow.
 - A self-hosted FreshRSS instance for lead feeds.
 - A ready-made Reddit lead feed covering the subreddits listed in
   [feeds/reddit-leads.yaml](feeds/reddit-leads.yaml).
-- Three lead categories:
-  - `High Priority` for AI-classified high-priority leads.
-  - `Reddit Leads` for posts that look like real hiring opportunities.
-  - `Unqualified Reddit Leads` for offers, self-promotion, advice posts, and
-    other noise worth reviewing separately.
+- FreshRSS `Main stream` for everything FreshRSS has stored.
+- `Reddit Leads` for AI-classified `low`, `medium`, `high`, and `x_high`
+  Reddit leads.
+- `High Priority` for the `high` and `x_high` subset.
 - A FreshRSS extension with:
   - Reddit refresh status.
   - Manual refresh button.
@@ -36,29 +35,31 @@ Reddit RSS / other RSS
 FreshRSS stores articles
         |
         v
-FreshRSS filters split likely leads from obvious noise
+AI worker marks not_hiring noise read
         |
         v
 Optional AI worker adds summary + priority
         |
         v
-High-priority sync routes `high` leads into a dedicated category
+High-priority sync copies `high` and `x_high` leads into a dedicated category
         |
         v
 Read in FreshRSS or FeedFlow
 ```
 
-The AI worker uses four priority labels:
+The AI worker uses five priority labels:
 
 | Priority | Meaning |
 |---|---|
 | `high` | Paid, urgent, budgeted, or ready-to-hire work. |
+| `x_high` | Exceptional paid or highly relevant ready-to-hire work. |
 | `medium` | Looks paid or real, but urgency or budget is unclear. |
 | `low` | Still a possible buyer, but vague, unpaid, or weak. |
 | `not_hiring` | Not a buyer hiring for a role, task, or vendor. Examples: freelancer offers, portfolios, hire-me posts, job seekers, advice, showcases, news, spam, or discussion. |
 
-`not_hiring` items are moved out of the qualified lead feed and left visible in
-the unqualified review feed.
+`not_hiring` items are marked read and hidden from the `Reddit Leads` category
+view by the FreshRSS extension. They remain stored in FreshRSS, so `Main stream`
+can still show them when read items are included.
 
 The AI worker also assigns a `job_type` label such as `video editing` or
 `scriptwriting`. These labels are stored in `rss_leads_job_types`; future AI
@@ -66,9 +67,9 @@ requests receive the existing list and are told to choose from it when possible,
 only creating a new concise label when none fits. High-priority items also get a
 FreshRSS/RSS category tag like `job:video_editing`.
 
-`high` items are routed into the `High Priority` category through a derived feed
-named `High Priority Reddit Leads`, and are marked read in the source Reddit
-categories so the unread views stay separated.
+`high` and `x_high` items are copied into the `High Priority` category through a
+derived feed named `High Priority Reddit Leads`. They remain visible in
+`Reddit Leads`, so that category contains the full low-through-x-high set.
 
 ## Why It Avoids Limits
 
@@ -163,11 +164,10 @@ docker cp scripts/apply-freshrss-reddit-leads.php freshrss:/tmp/apply-freshrss-r
 docker exec freshrss php /tmp/apply-freshrss-reddit-leads.php
 ```
 
-You should now see three lead categories in FreshRSS:
+You should now see the main FreshRSS stream plus two lead categories:
 
 - `High Priority`
 - `Reddit Leads`
-- `Unqualified Reddit Leads`
 
 ## Daily Use
 
@@ -185,8 +185,8 @@ The dashboard is designed so the important bits are visible quickly:
 - The AI dashboard shows when the next batch will run, what was processed last,
   which model was used, request success/failure counts, and recent errors.
 
-The unqualified feed is still useful. It catches false negatives, hiring
-threads, market research, and posts that may become useful later.
+`Main stream` is the place to review everything, including items that were
+classified as `not_hiring`.
 
 ## Connect FeedFlow
 
@@ -248,7 +248,7 @@ The most common settings go in `.env`.
 |---|---|---|
 | `FRESHRSS_USER` | `invictine` | FreshRSS account name used by the stack scripts and AI worker. |
 | `GEMINI_API_KEY` | empty | Enables AI summaries and priority labels. Leave empty to run without AI. |
-| `AI_FILTER_INTERVAL_SECONDS` | `180` | How often the AI worker checks for more work. |
+| `AI_FILTER_INTERVAL_SECONDS` | `20` | How often the AI worker checks for more work. Keep this low so high-priority notifications can land within two minutes of FreshRSS seeing a post. |
 | `AI_FILTER_LOOKBACK_DAYS` | `14` | How far back the AI worker looks for recent posts. |
 | `AI_GEMMA_MODEL` | `gemma4-31b` | First-pass model alias. |
 | `AI_REFINE_MODELS` | `gemini-3.1-flash-lite,gemini-3-flash` | Refinement model order. |
@@ -258,7 +258,8 @@ The most common settings go in `.env`.
 | `AI_MODEL_DAILY_LIMITS` | `gemini-3.1-flash-lite=500,gemini-3-flash=20,gemma4-31b=1500` | Local per-model request caps. |
 | `AI_FILTER_DAILY_REQUEST_BUDGET` | `0` | Optional global daily cap. `0` means track requests but do not enforce a global cap. |
 | `AI_JOB_TYPE_OPTION_LIMIT` | `25` | Maximum learned job-type labels shown to the AI as reusable options. |
-| `AI_BENCHMARK_LOW_INTELLIGENCE_MODELS` | `gemma4-31b,gemini-3.1-flash-lite,gemini-3-flash` | Comma-separated candidate models compared by the benchmark runner. |
+| `RSS_LEADS_LOCAL_LOCATIONS` | empty | Semicolon-separated local locations for in-person high-priority filtering, such as `Bengaluru; Bangalore; India`. |
+| `AI_BENCHMARK_LOW_INTELLIGENCE_MODELS` | `gemma4-31b,gemini-3.1-flash-lite` | Comma-separated candidate models compared by the benchmark runner. Add slower or experimental models manually when needed. |
 | `AI_BENCHMARK_SAMPLE_SIZE` | `8` | Number of recent Reddit lead entries used in a benchmark run. |
 | `AI_BENCHMARK_HIGH_INTELLIGENCE_API_KEY` | falls back to `GEMINI_API_KEY` | API key used by the high-intelligence quality judge. |
 | `AI_BENCHMARK_HIGH_INTELLIGENCE_MODEL` | `gemini-3.1-pro-preview` | High-intelligence API model used to judge benchmark output quality. `gemini-3.1-pro` is accepted as an alias. |
@@ -316,6 +317,8 @@ the SDK wrapper and use the CLI/API paths instead.
 
 The current subreddit list and feed policy live in
 [feeds/reddit-leads.yaml](feeds/reddit-leads.yaml).
+Recurring comment-thread sources live in
+[feeds/reddit-comment-threads.json](feeds/reddit-comment-threads.json).
 
 The included sources focus on:
 
@@ -331,9 +334,51 @@ from `Subscription management > Import/export` in FreshRSS, but the setup script
 is preferred because it also installs the qualified/unqualified filters. The AI
 worker keeps the `High Priority` category synced after items are classified.
 
-Thread-based communities still need human review. In places like social media
-hiring threads, the useful lead often lives inside the comments, not only in the
-RSS article title.
+Thread-based communities are handled through local FreshRSS feeds named
+`Reddit Leads - comments - ...`. Each source searches for the latest matching
+weekly, monthly, or daily thread, fetches comments from the matching post, and
+emits those comments as RSS items. These items go through the same FreshRSS
+filters, AI classification, and high-priority routing as normal Reddit posts.
+
+To add another recurring-thread subreddit, add an enabled object to
+`feeds/reddit-comment-threads.json`:
+
+```json
+{
+  "id": "example-weekly-hiring",
+  "enabled": true,
+  "subreddit": "example",
+  "label": "weekly hiring thread",
+  "q": "\"Weekly Hiring Thread\"",
+  "title_patterns": ["/Weekly Hiring Thread/i"]
+}
+```
+
+Then rerun `scripts/apply-freshrss-reddit-leads.php` in the FreshRSS container.
+The source id becomes the local feed URL parameter:
+`http://127.0.0.1/rss-leads-reddit-comments.php?source=example-weekly-hiring`.
+
+## Local Location
+
+High-priority routing can account for jobs that require an in-person or hybrid
+location. In FreshRSS, use the `Location` button next to the Reddit leads
+controls. Add each city, region, or alias that posts may use, then save. For
+example, add both `Bengaluru` and `Bangalore` if you want either spelling to
+count as local.
+
+The UI stores locations in the FreshRSS user data file
+`rss_leads_location.json`. You can also set `RSS_LEADS_LOCAL_LOCATIONS` in
+`.env`, using semicolons between aliases:
+
+```text
+RSS_LEADS_LOCAL_LOCATIONS=Bengaluru; Bangalore; India
+```
+
+You can also edit [feeds/local-location.json](feeds/local-location.json). The
+effective list is the union of `.env`, that file, and the UI-saved aliases. When
+locations are configured, in-person or hybrid jobs are only allowed into
+`High Priority` if the post text contains one of those configured locations.
+Remote jobs are not filtered by location.
 
 ## Project Structure
 
@@ -341,13 +386,15 @@ RSS article title.
 |---|---|
 | [docker-compose.yml](docker-compose.yml) | FreshRSS, AI worker, and optional RSSBridge services. |
 | [feeds/reddit-leads.yaml](feeds/reddit-leads.yaml) | Human-readable source list and feed policy. |
+| [feeds/reddit-comment-threads.json](feeds/reddit-comment-threads.json) | Recurring Reddit thread comment sources. |
+| [feeds/local-location.json](feeds/local-location.json) | Optional local aliases used to filter in-person high-priority jobs. |
 | [feeds/reddit-leads.opml](feeds/reddit-leads.opml) | Manual FreshRSS import file. |
 | [scripts/apply-freshrss-reddit-leads.php](scripts/apply-freshrss-reddit-leads.php) | Installs or updates the bundled Reddit feeds and filters. |
 | [scripts/gemini-ai-filter.php](scripts/gemini-ai-filter.php) | AI summary, priority, model-limit, and routing worker. |
 | [scripts/benchmark-ai-models.php](scripts/benchmark-ai-models.php) | Compares model speed and judged output quality for the AI classifier. |
 | [scripts/antigravity-high-intelligence-judge.py](scripts/antigravity-high-intelligence-judge.py) | Google Antigravity SDK wrapper used by the benchmark quality judge. |
 | [extensions/RssLeadsStatus](extensions/RssLeadsStatus) | FreshRSS UI extension for Reddit status, badges, and AI dashboard. |
-| [freshrss-public](freshrss-public) | Small JSON endpoints used by the FreshRSS extension. |
+| [freshrss-public](freshrss-public) | Small JSON/RSS endpoints used by the FreshRSS extension and local feeds. |
 | [deep-research-report.md](deep-research-report.md) | Original research notes behind the first Reddit source list. |
 
 ## Check That It Is Working

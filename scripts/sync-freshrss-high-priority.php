@@ -1,17 +1,19 @@
 <?php
 declare(strict_types=1);
 
+require_once __DIR__ . '/lib/RssLeads/Support.php';
+
 const RSS_LEADS_OLD_HIGH_PRIORITY_CATEGORY = 'High Priority';
 const RSS_LEADS_OLD_HIGH_PRIORITY_FEED = 'High Priority Reddit Leads';
-const RSS_LEADS_HIGH_PRIORITY_CATEGORY = 'High Priority';
-const RSS_LEADS_HIGH_PRIORITY_FEED = 'High Reddit Leads';
+const RSS_LEADS_HIGH_PRIORITY_CATEGORY = 'High + X-High Priority';
+const RSS_LEADS_HIGH_PRIORITY_FEED = 'High + X-High Reddit Leads';
 const RSS_LEADS_HIGH_PRIORITY_FEED_URL = 'http://127.0.0.1/rss-leads-high-priority.php';
 const RSS_LEADS_LOW_PRIORITY_CATEGORY = 'Low Priority';
 const RSS_LEADS_LOW_PRIORITY_FEED = 'Low Priority Reddit Leads';
 const RSS_LEADS_LOW_PRIORITY_FEED_URL = 'http://127.0.0.1/rss-leads-high-priority.php?bucket=low';
-const RSS_LEADS_LOW_MEDIUM_PRIORITY_CATEGORY = 'Low-Medium Priority';
-const RSS_LEADS_LOW_MEDIUM_PRIORITY_FEED = 'Low-Medium Reddit Leads';
-const RSS_LEADS_LOW_MEDIUM_PRIORITY_FEED_URL = 'http://127.0.0.1/rss-leads-high-priority.php?bucket=low_medium';
+const RSS_LEADS_MEDIUM_PRIORITY_CATEGORY = 'Medium Priority';
+const RSS_LEADS_MEDIUM_PRIORITY_FEED = 'Medium Priority Reddit Leads';
+const RSS_LEADS_MEDIUM_PRIORITY_FEED_URL = 'http://127.0.0.1/rss-leads-high-priority.php?bucket=medium';
 const RSS_LEADS_NOT_HIRING_CATEGORY = 'Not Hiring';
 const RSS_LEADS_NOT_HIRING_FEED = 'Not Hiring Reddit Leads';
 const RSS_LEADS_NOT_HIRING_FEED_URL = 'http://127.0.0.1/rss-leads-high-priority.php?bucket=not_hiring';
@@ -36,14 +38,14 @@ function rss_leads_feed_buckets(): array {
 			'location_filter' => false,
 			'require_known_payment' => false,
 		],
-		'low_medium' => [
-			'category' => RSS_LEADS_LOW_MEDIUM_PRIORITY_CATEGORY,
-			'feed' => RSS_LEADS_LOW_MEDIUM_PRIORITY_FEED,
-			'old_categories' => ['Medium-High Priority'],
-			'old_feeds' => ['Medium-High Reddit Leads'],
-			'url' => RSS_LEADS_LOW_MEDIUM_PRIORITY_FEED_URL,
+		'medium' => [
+			'category' => RSS_LEADS_MEDIUM_PRIORITY_CATEGORY,
+			'feed' => RSS_LEADS_MEDIUM_PRIORITY_FEED,
+			'old_categories' => ['Low-Medium Priority', 'Medium-High Priority'],
+			'old_feeds' => ['Low-Medium Reddit Leads', 'Medium-High Reddit Leads'],
+			'url' => RSS_LEADS_MEDIUM_PRIORITY_FEED_URL,
 			'description' => 'AI-classified medium Reddit leads from the FreshRSS leads stack.',
-			'attributes' => ['lead_bucket' => 'low_medium_priority', 'source' => 'rss_leads_ai', 'priority' => 'medium'],
+			'attributes' => ['lead_bucket' => 'medium_priority', 'source' => 'rss_leads_ai', 'priority' => 'medium'],
 			'priorities' => ['medium'],
 			'guid_prefix' => 'rss-leads-medium:',
 			'location_filter' => false,
@@ -52,8 +54,8 @@ function rss_leads_feed_buckets(): array {
 		'high' => [
 			'category' => RSS_LEADS_HIGH_PRIORITY_CATEGORY,
 			'feed' => RSS_LEADS_HIGH_PRIORITY_FEED,
-			'old_categories' => [RSS_LEADS_OLD_HIGH_PRIORITY_CATEGORY],
-			'old_feeds' => [RSS_LEADS_OLD_HIGH_PRIORITY_FEED],
+			'old_categories' => [RSS_LEADS_OLD_HIGH_PRIORITY_CATEGORY, 'Top Priority'],
+			'old_feeds' => [RSS_LEADS_OLD_HIGH_PRIORITY_FEED, 'High Reddit Leads'],
 			'url' => RSS_LEADS_HIGH_PRIORITY_FEED_URL,
 			'description' => 'AI-classified high and x-high Reddit leads with known payment from the FreshRSS leads stack.',
 			'attributes' => ['lead_bucket' => 'high_priority', 'source' => 'rss_leads_ai', 'priority' => 'high'],
@@ -87,11 +89,7 @@ function rss_leads_high_priority_guid(string $link): string {
 }
 
 function rss_leads_compact_html(string $html, int $limit = 6000): string {
-	$html = trim($html);
-	if (mb_strlen($html, 'UTF-8') <= $limit) {
-		return $html;
-	}
-	return mb_substr($html, 0, $limit, 'UTF-8') . '...';
+	return RssLeadsText::htmlExcerpt($html, $limit);
 }
 
 function rss_leads_monthly_amount_label(string $monthlyAmount): string {
@@ -122,22 +120,11 @@ function rss_leads_format_monthly_amount(float $min, ?float $max = null, string 
 }
 
 function rss_leads_compact_text(string $html, int $limit = 2400): string {
-	$text = html_entity_decode(strip_tags($html), ENT_QUOTES | ENT_HTML5, 'UTF-8');
-	$text = preg_replace('/\s+/u', ' ', $text) ?? $text;
-	$text = trim($text);
-	if (mb_strlen($text, 'UTF-8') > $limit) {
-		$text = mb_substr($text, 0, $limit, 'UTF-8');
-	}
-	return $text;
+	return RssLeadsText::compact($html, $limit);
 }
 
 function rss_leads_normalized_text(string $value): string {
-	$value = html_entity_decode(strip_tags($value), ENT_QUOTES | ENT_HTML5, 'UTF-8');
-	$value = mb_strtolower($value, 'UTF-8');
-	$value = preg_replace('/[^a-z0-9+#\/ -]+/u', ' ', $value) ?? $value;
-	$value = str_replace(['.', ','], ' ', $value);
-	$value = preg_replace('/\s+/u', ' ', $value) ?? $value;
-	return trim($value);
+	return RssLeadsText::normalized($value);
 }
 
 function rss_leads_configured_locations(): array {
@@ -699,6 +686,10 @@ function rss_leads_sync_priority_feeds(PDO $db, ?int $now = null): array {
 		foreach (rss_leads_feed_buckets() as $bucketKey => $bucket) {
 			$results[$bucketKey] = rss_leads_sync_bucket_feed($db, $bucketKey, $bucket, $now);
 		}
+		$obsolete = $db->prepare('DELETE FROM category WHERE name = :name AND NOT EXISTS (SELECT 1 FROM feed WHERE feed.category = category.id)');
+		foreach (['Top Priority', 'Low-Medium Priority', 'Medium-High Priority', 'High Priority'] as $name) {
+			$obsolete->execute([':name' => $name]);
+		}
 		rss_leads_update_source_feed_caches($db);
 
 		if ($ownsTransaction) {
@@ -725,9 +716,7 @@ if (realpath((string)($_SERVER['SCRIPT_FILENAME'] ?? '')) === __FILE__) {
 	}
 
 	$dbPath = getenv('FRESHRSS_DB') ?: "/var/www/FreshRSS/data/users/{$user}/db.sqlite";
-	$db = new PDO('sqlite:' . $dbPath);
-	$db->setAttribute(PDO::ATTR_ERRMODE, PDO::ERRMODE_EXCEPTION);
-	$db->exec('PRAGMA busy_timeout = 10000');
+	$db = RssLeadsDb::sqlite($dbPath);
 	$result = rss_leads_sync_high_priority_feed($db);
 	echo 'Synced priority feeds: ' . json_encode($result, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE) . "\n";
 }

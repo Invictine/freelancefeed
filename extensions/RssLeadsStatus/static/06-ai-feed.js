@@ -6,13 +6,11 @@ function rssLeadsOrderLeadSidebar() {
 	var orderByLabel = {
 		'reddit leads': 'rss-leads-sidebar-reddit',
 		'low priority': 'rss-leads-sidebar-low',
-		'low-medium priority': 'rss-leads-sidebar-low-medium',
+		'medium priority': 'rss-leads-sidebar-medium',
 		'medium priority': 'rss-leads-sidebar-medium',
 		'top priority': 'rss-leads-sidebar-priority',
-		'low medium high priority': 'rss-leads-sidebar-priority',
-		'low/medium/high priority': 'rss-leads-sidebar-priority',
-		'low, medium, high priority': 'rss-leads-sidebar-priority',
-		'priority leads': 'rss-leads-sidebar-priority',
+		'high + x-high priority': 'rss-leads-sidebar-high',
+		'high & x-high priority': 'rss-leads-sidebar-high',
 		'high priority': 'rss-leads-sidebar-high',
 		'not hiring': 'rss-leads-sidebar-not-hiring'
 	};
@@ -95,6 +93,7 @@ function rssLeadsRenderAiResult(entry, result) {
 		entry.removeAttribute('data-ai-fallback');
 	}
 	entry.setAttribute('data-ai-summary', result.summary || '');
+	entry.setAttribute('data-ai-cv-fit', rssLeadsNormalizeCvFit(result.cv_fit));
 	if (rssLeadsJobTypeLabel(result)) {
 		entry.setAttribute('data-ai-job-type', rssLeadsJobTypeLabel(result));
 	} else {
@@ -120,12 +119,19 @@ function rssLeadsRenderAiResult(entry, result) {
 		var amount = rssLeadsMonthlyAmountLabel(result);
 		var hourlyAmount = rssLeadsHourlyAmountLabel(result);
 		var compactJobTypeLabel = rssLeadsJobTypeLabel(result);
+		var compactCvFit = rssLeadsNormalizeCvFit(result.cv_fit);
 		var compactScamLikelihood = rssLeadsScamLikelihood(result);
 		if (compactJobTypeLabel) {
 			var compactJobType = document.createElement('span');
 			compactJobType.className = 'rss-leads-ai-job-type';
 			compactJobType.textContent = compactJobTypeLabel;
 			compactMeta.appendChild(compactJobType);
+		}
+		if (compactCvFit !== 'low') {
+			var compactFit = document.createElement('span');
+			compactFit.className = 'rss-leads-ai-cv-fit rss-leads-ai-cv-fit-' + compactCvFit;
+			compactFit.textContent = 'CV ' + compactCvFit;
+			compactMeta.appendChild(compactFit);
 		}
 		if (amount) {
 			var compactAmount = document.createElement('span');
@@ -177,6 +183,7 @@ function rssLeadsRenderAiResult(entry, result) {
 	var amountLabel = rssLeadsMonthlyAmountLabel(result);
 	var hourlyLabel = rssLeadsHourlyAmountLabel(result);
 	var jobType = rssLeadsJobTypeLabel(result);
+	var cvFit = rssLeadsNormalizeCvFit(result.cv_fit);
 	var scamScore = rssLeadsScamLikelihood(result);
 	var summary = document.createElement('span');
 	summary.className = 'rss-leads-ai-summary';
@@ -188,6 +195,12 @@ function rssLeadsRenderAiResult(entry, result) {
 		jobTypeBadge.className = 'rss-leads-ai-job-type';
 		jobTypeBadge.textContent = jobType;
 		card.appendChild(jobTypeBadge);
+	}
+	if (cvFit !== 'low') {
+		var fitBadge = document.createElement('span');
+		fitBadge.className = 'rss-leads-ai-cv-fit rss-leads-ai-cv-fit-' + cvFit;
+		fitBadge.textContent = 'CV ' + cvFit;
+		card.appendChild(fitBadge);
 	}
 	if (amountLabel) {
 		var amountBadge = document.createElement('span');
@@ -254,14 +267,11 @@ function rssLeadsRenderAiResults(items) {
 	var scrollAnchor = rssLeadsActiveScrollAnchor();
 	var classifiedIds = {};
 	Object.keys(items || {}).forEach(function (entryId) {
-		Array.prototype.some.call(document.querySelectorAll('.flux[data-entry]'), function (entry) {
-			if (entry.getAttribute('data-entry') === entryId) {
-				rssLeadsRenderAiResult(entry, items[entryId]);
-				classifiedIds[entryId] = true;
-				return true;
-			}
-			return false;
-		});
+		var entry = rssLeadsEntryById(entryId);
+		if (entry) {
+			rssLeadsRenderAiResult(entry, items[entryId]);
+			classifiedIds[entryId] = true;
+		}
 	});
 	rssLeadsRenderFallbackAiResults(classifiedIds, true);
 	rssLeadsApplyAiSort();
@@ -298,6 +308,7 @@ function rssLeadsRenderFallbackAiResults(classifiedIds, skipSort) {
 function rssLeadsFetchAiResults(includeStatus) {
 	includeStatus = includeStatus === true;
 	var ids = [];
+	rssLeadsIndexEntries(document);
 	Array.prototype.forEach.call(document.querySelectorAll('.flux[data-entry]'), function (entry) {
 		var id = entry.getAttribute('data-entry');
 		if (id && ids.indexOf(id) === -1) {
@@ -308,10 +319,21 @@ function rssLeadsFetchAiResults(includeStatus) {
 	if (ids.length) {
 		url += '&ids=' + encodeURIComponent(ids.slice(0, 120).join(','));
 	}
+	var requestKey = ids.slice(0, 120).join(',') + '|' + (includeStatus ? '1' : '0');
+	if (rssLeadsAiRequest && rssLeadsAiRequestKey === requestKey) {
+		return rssLeadsAiRequest;
+	}
+	if (rssLeadsAiRequest && rssLeadsAiRequest.abort) {
+		rssLeadsAiRequest.abort();
+	}
+	var controller = window.AbortController ? new AbortController() : null;
+	rssLeadsAiRequest = controller || { abort: function () {} };
+	rssLeadsAiRequestKey = requestKey;
 
-	window.fetch(url, {
+	var request = window.fetch(url, {
 		credentials: 'same-origin',
-		cache: 'no-store'
+		cache: 'no-store',
+		signal: controller ? controller.signal : undefined
 	})
 		.then(function (response) {
 			if (!response.ok) {
@@ -343,6 +365,9 @@ function rssLeadsFetchAiResults(includeStatus) {
 			}
 		})
 		.catch(function (error) {
+			if (error && error.name === 'AbortError') {
+				return;
+			}
 			rssLeadsRenderFallbackAiResults({});
 			if (includeStatus) {
 				rssLeadsRenderAiStatus({
@@ -358,5 +383,12 @@ function rssLeadsFetchAiResults(includeStatus) {
 					}
 				});
 			}
+		})
+		.finally(function () {
+			if (rssLeadsAiRequestKey === requestKey) {
+				rssLeadsAiRequest = null;
+				rssLeadsAiRequestKey = '';
+			}
 		});
+	return request;
 }

@@ -42,7 +42,7 @@ function retention_table_counts(PDO $db, string $sql): array {
 }
 
 $latestAiSql = 'SELECT link, priority, ROW_NUMBER() OVER (PARTITION BY link ORDER BY updated_at DESC, entry_id DESC) AS rn FROM rss_leads_ai';
-$sourceFeedSql = '(f.name LIKE "Reddit Leads - %" OR f.name = "Recovered Reddit Leads - AI classified history" OR e.link LIKE "%reddit.com/r/%") AND f.name != "High Priority Reddit Leads"';
+$sourceFeedSql = '(f.name LIKE "Reddit Leads - %" OR f.name = "Recovered Reddit Leads - AI classified history" OR e.link LIKE "%reddit.com/r/%") AND f.name NOT IN ("High Priority Reddit Leads", "High Reddit Leads", "High + X-High Reddit Leads", "Medium Priority Reddit Leads", "Low-Medium Reddit Leads", "Low Priority Reddit Leads", "Not Hiring Reddit Leads")';
 
 $db = new PDO('sqlite:' . $dbPath);
 $db->setAttribute(PDO::ATTR_ERRMODE, PDO::ERRMODE_EXCEPTION);
@@ -72,7 +72,7 @@ try {
 		SELECT e.id, "high_priority_feed_older_than_keep"
 		FROM entry e
 		JOIN feed f ON f.id = e.id_feed
-		WHERE f.name = "High Priority Reddit Leads"
+		WHERE f.name IN ("High Priority Reddit Leads", "High Reddit Leads", "High + X-High Reddit Leads")
 		  AND e.date < :cutoff',
 		[':cutoff' => $highPriorityCutoff]
 	);

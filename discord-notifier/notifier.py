@@ -29,6 +29,7 @@ class FeedItem:
     guid: str
     title: str
     link: str
+    priority: str
     ai_summary: str
     monthly_amount: str
     source_excerpt: str
@@ -88,6 +89,14 @@ def truncate(value: str, limit: int) -> str:
     return value[: max(0, limit - 3)].rstrip() + "..."
 
 
+def markdown_escape(value: str) -> str:
+    return re.sub(r"([\\`*_~|>])", r"\\\1", value)
+
+
+def discord_link_escape(value: str) -> str:
+    return value.replace(")", "%29").replace("(", "%28")
+
+
 def html_to_text(value: str) -> str:
     text = value or ""
     text = re.sub(r"(?i)<\s*br\s*/?\s*>", "\n", text)
@@ -121,8 +130,90 @@ def monthly_amount_from_categories(categories: tuple[str, ...]) -> str:
     return ""
 
 
+def money_value(amount: str, suffix: str = "") -> float:
+    value = float(amount.replace(",", ""))
+    lowered = suffix.lower()
+    if lowered == "m":
+        return value * 1_000_000
+    if lowered == "k":
+        return value * 1_000
+    return value
+
+
+def money_symbol(value: str) -> str:
+    match = re.search(r"[$£€]", value)
+    return match.group(0) if match else "$"
+
+
+def format_money(symbol: str, value: float) -> str:
+    if value >= 100:
+        return f"{symbol}{value:,.0f}"
+    if value >= 10:
+        return f"{symbol}{value:,.1f}".rstrip("0").rstrip(".")
+    return f"{symbol}{value:,.2f}".rstrip("0").rstrip(".")
+
+
+def monthly_numbers(value: str) -> tuple[str, list[float]]:
+    symbol = money_symbol(value)
+    values = [
+        money_value(match.group(1), match.group(2) or "")
+        for match in re.finditer(r"[$£€]?\s*([0-9][0-9,]*(?:\.[0-9]+)?)\s*([kKmM]?)", value)
+    ]
+    return symbol, values
+
+
+def hourly_from_monthly(monthly_amount: str) -> str:
+    if not monthly_amount or monthly_amount.lower() == "unknown":
+        return ""
+    symbol, values = monthly_numbers(monthly_amount)
+    if not values:
+        return ""
+    monthly_average = sum(values) / len(values)
+    return "~" + format_money(symbol, monthly_average / 160) + "/hr"
+
+
+def hourly_from_text(text: str) -> str:
+    normalized = re.sub(r"\s+", " ", text or "")
+    money = r"([$£€])\s*([0-9][0-9,]*(?:\.[0-9]+)?)\s*([kKmM]?)"
+    pattern = re.compile(
+        money + r"(?:\s*(?:-|\u2013|to)\s*[$£€]?\s*([0-9][0-9,]*(?:\.[0-9]+)?)\s*([kKmM]?))?\s*(?:/hr|/hour|per hour|hourly)\b",
+        flags=re.IGNORECASE,
+    )
+    match = pattern.search(normalized)
+    if match is None:
+        return ""
+    symbol = match.group(1)
+    low = money_value(match.group(2), match.group(3) or "")
+    high = money_value(match.group(4), match.group(5) or "") if match.group(4) else low
+    if high < low:
+        low, high = high, low
+    if abs(high - low) < 0.01:
+        return format_money(symbol, low) + "/hr"
+    return format_money(symbol, low) + "-" + format_money(symbol, high) + "/hr"
+
+
+def budget_field_value(monthly_amount: str, hourly_amount: str) -> str:
+    monthly = monthly_amount if monthly_amount and monthly_amount.lower() != "unknown" else ""
+    hourly = hourly_amount or hourly_from_monthly(monthly)
+    values = []
+    if monthly:
+        values.append(markdown_escape(monthly))
+    if hourly:
+        values.append(markdown_escape(hourly))
+    return "\n".join(values) if values else "Unknown"
+
+
 def clean_category_label(value: str) -> str:
     value = html.unescape(value or "").strip()
+    lowered = value.lower()
+    if lowered.startswith("ai:"):
+        value = "AI " + value.split(":", 1)[1]
+    elif lowered.startswith("priority:"):
+        value = value.split(":", 1)[1] + " priority"
+    elif lowered.startswith("scam:"):
+        value = "Scam " + value.split(":", 1)[1]
+    elif lowered == "rss-recovered":
+        value = "Recovered history"
     if value.lower().startswith("r/"):
         return value
     value = value.replace("_", " ")
@@ -139,46 +230,74 @@ def job_type_from_categories(categories: tuple[str, ...]) -> str:
     return ""
 
 
-def display_tags_from_categories(categories: tuple[str, ...], subreddit: str) -> list[str]:
-    tags: list[str] = []
-    seen: set[str] = set()
-    subreddit_key = subreddit.lower()
+def scam_likelihood_from_categories(categories: tuple[str, ...], text: str) -> str:
     for category in categories:
         lowered = category.lower()
-        if lowered.startswith(("monthly:", "job:")):
+        if lowered.startswith("scam:"):
+            value = clean_category_label(category.split(":", 1)[1]).lower()
+            return value.title() if value else "Unknown"
+    match = re.search(r"\bscam likelihood:\s*([0-9]{1,3})%", text or "", flags=re.IGNORECASE)
+    if match is not None:
+        score = max(0, min(100, int(match.group(1))))
+        if score >= 70:
+            return f"High ({score}%)"
+        if score >= 35:
+            return f"Medium ({score}%)"
+        return f"Low ({score}%)"
+    return "Unknown"
+
+
+def source_bits_for_display(item: FeedItem) -> list[str]:
+    bits: list[str] = []
+    seen: set[str] = set()
+    for bit in (item.subreddit, item.author):
+        cleaned = bit.strip()
+        if not cleaned:
             continue
-        label = clean_category_label(category)
-        if not label:
-            continue
-        if label.lower() == subreddit_key or category.lower() == subreddit_key:
-            continue
-        key = label.lower()
+        key = cleaned.lower()
         if key in seen:
             continue
         seen.add(key)
-        tags.append(label)
-    return tags
+        bits.append(cleaned)
+    return bits
 
 
-def discord_tag_list(tags: list[str], limit: int = 8) -> str:
-    if not tags:
-        return ""
-    visible = tags[:limit]
-    rendered = " ".join(f"`{truncate(tag, 36)}`" for tag in visible)
-    hidden = len(tags) - len(visible)
-    if hidden > 0:
-        rendered += f" +{hidden} more"
-    return rendered
+def source_label(item: FeedItem) -> str:
+    source = " • ".join(markdown_escape(bit) for bit in source_bits_for_display(item))
+    return source or "Unknown"
 
 
 def clean_source_excerpt(value: str) -> str:
     value = re.sub(r"(?i)\n?submitted by\s+.*?(?:\s+\[link\]\s+\[comments\])?\s*$", "", value.strip())
-    return value.strip()
+    cleaned_lines: list[str] = []
+    skip_prefixes = (
+        "recovered ai history.",
+        "ai summary:",
+        "priority:",
+        "estimated monthly amount:",
+        "monthly amount:",
+        "job type:",
+        "scam likelihood:",
+        "classified at:",
+        "open reddit post",
+    )
+    for line in value.splitlines():
+        stripped = line.strip()
+        if not stripped:
+            continue
+        lowered = stripped.lower()
+        if lowered.startswith(skip_prefixes):
+            continue
+        if re.fullmatch(r"https?://\S+", stripped):
+            continue
+        cleaned_lines.append(stripped)
+    return "\n".join(cleaned_lines).strip()
 
 
-def split_description(text: str, categories: tuple[str, ...]) -> tuple[str, str, str]:
+def split_description(text: str, categories: tuple[str, ...]) -> tuple[str, str, str, str]:
     summary = ""
     monthly_amount = monthly_amount_from_categories(categories)
+    priority = "high"
     body_lines: list[str] = []
 
     for line in text.splitlines():
@@ -186,8 +305,10 @@ def split_description(text: str, categories: tuple[str, ...]) -> tuple[str, str,
         if not stripped:
             continue
         lowered = stripped.lower()
-        if lowered.startswith("ai high priority:"):
-            summary = stripped.split(":", 1)[1].strip()
+        priority_match = re.match(r"^ai\s+(.+?)\s+priority:\s*(.*)$", stripped, flags=re.IGNORECASE)
+        if priority_match is not None:
+            priority = clean_category_label(priority_match.group(1)).lower()
+            summary = priority_match.group(2).strip()
             continue
         if lowered.startswith("estimated monthly amount:"):
             monthly_amount = stripped.split(":", 1)[1].strip() or monthly_amount
@@ -196,7 +317,7 @@ def split_description(text: str, categories: tuple[str, ...]) -> tuple[str, str,
             continue
         body_lines.append(stripped)
 
-    return summary, monthly_amount, clean_source_excerpt("\n".join(body_lines).strip())
+    return summary, monthly_amount, priority, clean_source_excerpt("\n".join(body_lines).strip())
 
 
 def item_text(item: ET.Element, tag: str) -> str:
@@ -242,12 +363,13 @@ def parse_feed(xml_bytes: bytes) -> list[FeedItem]:
             )
         )
         description_text = html_to_text(item_text(item, "description"))
-        ai_summary, monthly_amount, source_excerpt = split_description(description_text, categories)
+        ai_summary, monthly_amount, priority, source_excerpt = split_description(description_text, categories)
         parsed.append(
             FeedItem(
                 guid=guid,
                 title=item_text(item, "title") or link or "High-priority lead",
                 link=link,
+                priority=priority,
                 ai_summary=ai_summary,
                 monthly_amount=monthly_amount,
                 source_excerpt=source_excerpt,
@@ -285,16 +407,16 @@ def save_state(path: Path, state: dict[str, Any]) -> None:
 def discord_payload(item: FeedItem, role_id: str = "") -> dict[str, Any]:
     summary = item.ai_summary or "FreshRSS classified this as high priority."
     amount = item.monthly_amount or "unknown"
+    hourly_amount = hourly_from_text(" ".join([item.title, item.ai_summary, item.source_excerpt]))
     job_type = job_type_from_categories(item.categories)
-    tags = display_tags_from_categories(item.categories, item.subreddit)
-    source_bits = [bit for bit in (item.subreddit, item.author) if bit]
-    lead_text = f"New high-priority lead - {amount}"
-    content = f"<@&{role_id}> {lead_text}" if role_id else lead_text
+    scam_likelihood = scam_likelihood_from_categories(item.categories, item.source_excerpt)
+    priority_label = clean_category_label(item.priority or "high").replace("-", " ").title()
+    divider = "━━━━━━━━━━━━━━━━━━━━"
     embed: dict[str, Any] = {
         "title": truncate(item.title, 256),
-        "description": truncate(summary, 700),
+        "description": truncate(f"**Summary**\n{markdown_escape(summary)}\n\n{divider}", 900),
         "color": DISCORD_EMBED_COLOR,
-        "footer": {"text": "FreshRSS high-priority lead"},
+        "footer": {"text": "FreshRSS lead"},
     }
     if item.link.startswith(("http://", "https://")):
         embed["url"] = item.link
@@ -303,48 +425,44 @@ def discord_payload(item: FeedItem, role_id: str = "") -> dict[str, Any]:
 
     fields = [
         {
-            "name": "Estimated monthly",
-            "value": truncate(amount, 1024),
+            "name": "💰 Budget",
+            "value": truncate(budget_field_value(amount, hourly_amount), 1024),
             "inline": True,
-        }
+        },
+        {
+            "name": "🧩 Job type",
+            "value": markdown_escape(job_type.title() if job_type else "Unknown"),
+            "inline": True,
+        },
+        {
+            "name": "🛡️ Scam risk",
+            "value": markdown_escape(scam_likelihood),
+            "inline": True,
+        },
+        {
+            "name": "🔥 Priority",
+            "value": markdown_escape(priority_label),
+            "inline": True,
+        },
+        {
+            "name": "📍 Source",
+            "value": truncate(source_label(item), 1024),
+            "inline": True,
+        },
     ]
-    if source_bits:
-        fields.append(
-            {
-                "name": "Source",
-                "value": truncate(" | ".join(source_bits), 1024),
-                "inline": True,
-            }
-        )
-    if job_type:
-        fields.append(
-            {
-                "name": "Job type",
-                "value": truncate(job_type.title(), 1024),
-                "inline": True,
-            }
-        )
-    if tags:
-        fields.append(
-            {
-                "name": "Other tags",
-                "value": truncate(discord_tag_list(tags), 1024),
-                "inline": False,
-            }
-        )
     if item.source_excerpt:
         fields.append(
             {
-                "name": "Post excerpt",
-                "value": truncate(item.source_excerpt, 900),
+                "name": "📝 Original post",
+                "value": truncate(markdown_escape(item.source_excerpt), 850),
                 "inline": False,
             }
         )
     if item.link.startswith(("http://", "https://")):
         fields.append(
             {
-                "name": "Open lead",
-                "value": f"[View original post]({item.link})",
+                "name": "🔗 Open lead",
+                "value": f"[Open lead]({discord_link_escape(item.link)})",
                 "inline": False,
             }
         )
@@ -352,10 +470,10 @@ def discord_payload(item: FeedItem, role_id: str = "") -> dict[str, Any]:
 
     payload: dict[str, Any] = {
         "username": "RSS Leads",
-        "content": content,
         "embeds": [embed],
     }
     if role_id:
+        payload["content"] = f"<@&{role_id}>"
         payload["allowed_mentions"] = {
             "parse": [],
             "roles": [role_id],

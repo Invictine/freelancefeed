@@ -38,7 +38,15 @@ function rssLeadsQueueAiAnnotation() {
 	}, 800);
 }
 
-function rssLeadsQueueSubredditAnnotation() {
+function rssLeadsQueueSubredditAnnotation(mutations) {
+	var hasNewEntries = !mutations || Array.prototype.some.call(mutations, function (mutation) {
+		return Array.prototype.some.call(mutation.addedNodes || [], function (node) {
+			return node.nodeType === 1 && ((node.matches && node.matches('.flux[data-entry], article.flux_content')) || (node.querySelector && node.querySelector('.flux[data-entry], article.flux_content')));
+		});
+	});
+	if (!hasNewEntries) {
+		return;
+	}
 	if (rssLeadsSubredditRefreshQueued) {
 		return;
 	}
@@ -46,6 +54,7 @@ function rssLeadsQueueSubredditAnnotation() {
 	window.requestAnimationFrame(function () {
 		var scrollAnchor = rssLeadsActiveScrollAnchor();
 		rssLeadsSubredditRefreshQueued = false;
+		rssLeadsIndexEntries(document);
 		rssLeadsOrderLeadSidebar();
 		rssLeadsAnnotateSubreddits();
 		rssLeadsRenderFallbackAiResults({});
@@ -57,6 +66,7 @@ function rssLeadsQueueSubredditAnnotation() {
 }
 
 function rssLeadsWatchSubredditEntries() {
+	rssLeadsIndexEntries(document);
 	rssLeadsOrderLeadSidebar();
 	rssLeadsAnnotateSubreddits();
 	rssLeadsRenderFallbackAiResults({});
@@ -182,6 +192,7 @@ function rssLeadsInit() {
 	}
 	rssLeadsPollStatus();
 	rssLeadsFetchLocationSettings();
+	rssLeadsFetchCvProfile();
 	rssLeadsInstallScrollStabilizer();
 	rssLeadsWatchSubredditEntries();
 	rssLeadsFetchAiResults(true);

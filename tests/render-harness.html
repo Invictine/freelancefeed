@@ -1,0 +1,57 @@
+<!doctype html>
+<html lang="en">
+<head>
+	<meta charset="utf-8">
+	<meta name="viewport" content="width=device-width,initial-scale=1">
+	<title>RSS Leads render harness</title>
+	<link rel="stylesheet" href="../extensions/RssLeadsStatus/static/style.css">
+	<style>
+		body { font: 14px Arial, sans-serif; margin: 0; }
+		#toolbar { min-height: 42px; padding: 6px; }
+		#layout { display: grid; grid-template-columns: 220px minmax(0, 1fr); }
+		#sidebar { margin: 0; padding: 8px; }
+		#stream { min-width: 0; }
+		.flux { border-bottom: 1px solid #ddd; min-height: 58px; }
+		.flux_header { padding: 8px; }
+		.flux_content { display: none; }
+		.title { color: inherit; text-decoration: none; }
+		@media (max-width: 720px) { #layout { grid-template-columns: 1fr; } #aside_feed { display: none; } }
+	</style>
+</head>
+<body>
+	<div id="toolbar"><span id="nav_menu_actualize"></span></div>
+	<div id="layout">
+		<aside id="aside_feed"><ul id="sidebar"><li class="category all">All</li><li><a class="tree-folder-title" href="?get=5">Reddit Leads</a></li><li>Low Priority</li><li>Medium Priority</li><li>High + X-High Priority</li></ul></aside>
+		<main id="stream"></main>
+	</div>
+	<script>
+		window.__rssHarness = { started: performance.now(), longTasks: [] };
+		if (window.PerformanceObserver) {
+			try {
+				new PerformanceObserver(function (list) {
+					list.getEntries().forEach(function (entry) { window.__rssHarness.longTasks.push(Math.round(entry.duration)); });
+				}).observe({ entryTypes: ['longtask'] });
+			} catch (error) {}
+		}
+		function harnessEntry(id) {
+			var entry = document.createElement('article');
+			entry.className = 'flux not_read';
+			entry.setAttribute('data-entry', String(id));
+			entry.setAttribute('data-link', 'https://www.reddit.com/r/forhire/comments/' + id + '/lead/');
+			entry.innerHTML = '<div class="flux_header"><div class="item titleAuthorSummaryDate"><a class="title" href="https://www.reddit.com/r/forhire/comments/' + id + '/lead/">Hiring editor for $1,200/month - row ' + id + '</a><span class="date">15 July 2026 at 17:30</span><span class="item website">Reddit Leads</span></div></div><div class="flux_content"><div class="content"><header><h1 class="title"><a href="https://www.reddit.com/r/forhire/comments/' + id + '/lead/">Hiring editor</a></h1></header><p>Need an editor. Budget $1,200/month.</p></div></div>';
+			return entry;
+		}
+		var fragment = document.createDocumentFragment();
+		for (var i = 1; i <= 1000; i++) fragment.appendChild(harnessEntry(i));
+		document.getElementById('stream').appendChild(fragment);
+	</script>
+	<script src="../extensions/RssLeadsStatus/static/01-core.js"></script>
+	<script src="../extensions/RssLeadsStatus/static/02-status-widget.js"></script>
+	<script src="../extensions/RssLeadsStatus/static/03-reddit-ui.js"></script>
+	<script src="../extensions/RssLeadsStatus/static/04-lead-scoring.js"></script>
+	<script src="../extensions/RssLeadsStatus/static/05-quick-apply.js"></script>
+	<script src="../extensions/RssLeadsStatus/static/06-ai-feed.js"></script>
+	<script src="../extensions/RssLeadsStatus/static/08-location-settings.js"></script>
+	<script src="../extensions/RssLeadsStatus/static/07-bootstrap.js"></script>
+</body>
+</html>

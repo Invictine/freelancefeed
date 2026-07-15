@@ -87,7 +87,7 @@ function rssLeadsEnsureCompactMeta(compactTarget) {
 function rssLeadsClearCompactAi(compactTarget) {
 	var meta = compactTarget.querySelector('.rss-leads-title-meta');
 	if (meta) {
-		Array.prototype.forEach.call(meta.querySelectorAll('.rss-leads-ai-inline, .rss-leads-ai-job-type, .rss-leads-ai-monthly, .rss-leads-ai-hourly, .rss-leads-ai-scam, .rss-leads-compact-badge'), function (node) {
+		Array.prototype.forEach.call(meta.querySelectorAll('.rss-leads-ai-inline, .rss-leads-ai-job-type, .rss-leads-ai-cv-fit, .rss-leads-ai-monthly, .rss-leads-ai-hourly, .rss-leads-ai-scam, .rss-leads-compact-badge'), function (node) {
 			if (node.parentNode) {
 				node.parentNode.removeChild(node);
 			}

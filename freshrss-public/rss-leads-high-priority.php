@@ -4,6 +4,11 @@ declare(strict_types=1);
 header('Content-Type: application/rss+xml; charset=utf-8');
 header('Cache-Control: no-store');
 
+$supportPath = '/opt/rss-leads-stack/scripts/lib/RssLeads/Support.php';
+if (is_file($supportPath)) {
+	require_once $supportPath;
+}
+
 $user = getenv('RSS_LEADS_USER') ?: (getenv('FRESHRSS_USER') ?: 'invictine');
 if (preg_match('/^[A-Za-z0-9_.-]+$/', $user) !== 1) {
 	http_response_code(500);
@@ -28,17 +33,17 @@ $buckets = [
 		'location_filter' => false,
 		'require_known_payment' => false,
 	],
-	'low_medium' => [
-		'title' => 'Low-Medium Reddit Leads',
+	'medium' => [
+		'title' => 'Medium Priority Reddit Leads',
 		'description' => 'AI-classified medium Reddit leads from FreshRSS.',
 		'priorities' => ['medium'],
 		'guid_prefix' => 'rss-leads-medium:',
-		'cache_name' => 'rss_leads_low_medium.xml',
+		'cache_name' => 'rss_leads_medium_priority.xml',
 		'location_filter' => false,
 		'require_known_payment' => false,
 	],
 	'high' => [
-		'title' => 'High Reddit Leads',
+		'title' => 'High + X-High Priority Reddit Leads',
 		'description' => 'AI-classified high and x-high Reddit leads with known payment from FreshRSS.',
 		'priorities' => ['high', 'x_high'],
 		'guid_prefix' => 'rss-leads-high:',
@@ -56,7 +61,9 @@ $buckets = [
 		'require_known_payment' => false,
 	],
 ];
-if ($bucketKey === 'priority') {
+if ($bucketKey === 'low_medium') {
+	$bucketKey = 'medium';
+} elseif ($bucketKey === 'priority') {
 	$bucketKey = 'high';
 } elseif (!isset($buckets[$bucketKey])) {
 	$bucketKey = 'high';
@@ -73,6 +80,9 @@ function rss_cdata(string $value): string {
 }
 
 function rss_compact_html(string $html, int $limit = 6000): string {
+	if (class_exists('RssLeadsText')) {
+		return RssLeadsText::htmlExcerpt($html, $limit);
+	}
 	$html = trim($html);
 	if (mb_strlen($html, 'UTF-8') <= $limit) {
 		return $html;
@@ -116,6 +126,9 @@ function rss_format_monthly_amount(float $min, ?float $max = null, string $suffi
 }
 
 function rss_compact_text(string $html, int $limit = 2400): string {
+	if (class_exists('RssLeadsText')) {
+		return RssLeadsText::compact($html, $limit);
+	}
 	$text = html_entity_decode(strip_tags($html), ENT_QUOTES | ENT_HTML5, 'UTF-8');
 	$text = preg_replace('/\s+/u', ' ', $text) ?? $text;
 	$text = trim($text);
@@ -126,6 +139,9 @@ function rss_compact_text(string $html, int $limit = 2400): string {
 }
 
 function rss_normalized_text(string $value): string {
+	if (class_exists('RssLeadsText')) {
+		return RssLeadsText::normalized($value);
+	}
 	$value = html_entity_decode(strip_tags($value), ENT_QUOTES | ENT_HTML5, 'UTF-8');
 	$value = mb_strtolower($value, 'UTF-8');
 	$value = preg_replace('/[^a-z0-9+#\/ -]+/u', ' ', $value) ?? $value;

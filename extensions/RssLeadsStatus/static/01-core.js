@@ -5,6 +5,7 @@
 var rssLeadsStatusUrl = '/rss-leads-status.php';
 var rssLeadsAiUrl = '/rss-leads-ai.php';
 var rssLeadsLocationUrl = '/rss-leads-location.php';
+var rssLeadsProfileUrl = '/rss-leads-profile.php';
 var rssLeadsStatusText;
 var rssLeadsRefreshButton;
 var rssLeadsAiStatusButton;
@@ -31,6 +32,11 @@ var rssLeadsCvProfileStorageKey = 'rss-leads-cv-profile';
 var rssLeadsScrollAnchor = null;
 var rssLeadsScrollAnchorUntil = 0;
 var rssLeadsScrollStabilizerInstalled = false;
+var rssLeadsEntryIndex = Object.create(null);
+var rssLeadsAiRequest = null;
+var rssLeadsAiRequestKey = '';
+var rssLeadsProfileSyncPending = false;
+var rssLeadsProfileSyncValue = null;
 
 function rssLeadsFormatAge(seconds) {
 	if (seconds === null || seconds === undefined || seconds < 0) {
@@ -124,13 +130,33 @@ function rssLeadsClosestEntry(node) {
 }
 
 function rssLeadsEntryById(id) {
-	var entries = document.querySelectorAll('.flux[data-entry]');
-	for (var index = 0; index < entries.length; index++) {
-		if (entries[index].getAttribute('data-entry') === id) {
-			return entries[index];
-		}
+	var cached = rssLeadsEntryIndex[id];
+	if (cached && cached.isConnected) {
+		return cached;
 	}
-	return null;
+	var entry = document.querySelector('.flux[data-entry="' + String(id).replace(/[^0-9]/g, '') + '"]');
+	if (entry) {
+		rssLeadsEntryIndex[id] = entry;
+	}
+	return entry;
+}
+
+function rssLeadsIndexEntries(root) {
+	root = root || document;
+	var entries = [];
+	if (root.matches && root.matches('.flux[data-entry]')) {
+		entries.push(root);
+	}
+	if (root.querySelectorAll) {
+		Array.prototype.push.apply(entries, root.querySelectorAll('.flux[data-entry]'));
+	}
+	entries.forEach(function (entry) {
+		var id = entry.getAttribute('data-entry');
+		if (id) {
+			rssLeadsEntryIndex[id] = entry;
+		}
+	});
+	return entries;
 }
 
 function rssLeadsCaptureScrollAnchor(entry) {

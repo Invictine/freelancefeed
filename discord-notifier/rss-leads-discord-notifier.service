@@ -8,4 +8,5 @@ Type=oneshot
 EnvironmentFile=/etc/rss-leads-discord-notifier.env
 StateDirectory=rss-leads-discord-notifier
 StateDirectoryMode=0750
+TimeoutStartSec=25s
 ExecStart=/usr/bin/python3 /opt/rss-leads-discord/notifier.py

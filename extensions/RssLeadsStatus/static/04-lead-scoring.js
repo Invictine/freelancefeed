@@ -213,10 +213,10 @@ function rssLeadsProfilePhraseMatches(profile, text) {
 	return matches;
 }
 
-function rssLeadsCvProfileLooksHighlyRelevant(text) {
+function rssLeadsCvFit(text) {
 	var profile = rssLeadsGetSavedCvProfile();
 	if (!profile) {
-		return false;
+		return 'low';
 	}
 	var profileTerms = rssLeadsTermMap(profile);
 	var textTerms = rssLeadsTermMap(text);
@@ -226,7 +226,15 @@ function rssLeadsCvProfileLooksHighlyRelevant(text) {
 			matched++;
 		}
 	});
-	return matched >= 5 || (matched >= 3 && rssLeadsProfilePhraseMatches(profile, text) > 0);
+	var phrases = rssLeadsProfilePhraseMatches(profile, text);
+	if (matched >= 9 || (matched >= 6 && phrases >= 2)) {
+		return 'extreme';
+	}
+	return matched >= 4 || (matched >= 3 && phrases > 0) ? 'high' : 'low';
+}
+
+function rssLeadsCvProfileLooksHighlyRelevant(text) {
+	return rssLeadsCvFit(text) !== 'low';
 }
 
 function rssLeadsComputerVisionLooksRelevant(text) {
@@ -234,7 +242,7 @@ function rssLeadsComputerVisionLooksRelevant(text) {
 }
 
 function rssLeadsExtremelyRelevantSignal(text) {
-	return rssLeadsCvProfileLooksHighlyRelevant(text) || (rssLeadsTitleLooksHiring(text) && rssLeadsComputerVisionLooksRelevant(text));
+	return rssLeadsCvFit(text) === 'extreme';
 }
 
 function rssLeadsMoneyNumber(value, suffix) {
@@ -268,10 +276,15 @@ function rssLeadsPaymentKnown(amount) {
 }
 
 function rssLeadsHighRequiresPayment(priority, amount) {
-	if ((priority === 'high' || priority === 'x_high') && !rssLeadsPaymentKnown(amount)) {
-		return 'medium';
-	}
 	return priority;
+}
+
+function rssLeadsNormalizeCvFit(value) {
+	value = String(value || '').toLowerCase().replace(/[\s-]+/g, '_');
+	if (value === 'extreme' || value === 'exceptional' || value === 'perfect') {
+		return 'extreme';
+	}
+	return value === 'high' || value === 'strong' || value === 'good' ? 'high' : 'low';
 }
 
 function rssLeadsBestHourlySignal(signals) {
@@ -282,53 +295,15 @@ function rssLeadsBestHourlySignal(signals) {
 	})[0] || null;
 }
 
-function rssLeadsMoneyPriority(signal) {
-	if (!signal) {
-		return 'low';
-	}
-	if (signal.unit === '/hr') {
-		if (signal.max >= 75) {
-			return 'x_high';
-		}
-		if (signal.max >= 35) {
-			return 'high';
-		}
-		return signal.max > 5 ? 'medium' : 'low';
-	}
-	if (signal.unit === '/mo') {
-		if (signal.monthly >= 8000) {
-			return 'x_high';
-		}
-		if (signal.monthly >= 4000) {
-			return 'high';
-		}
-		return signal.monthly >= 200 ? 'medium' : 'low';
-	}
-	if (signal.unit === '/wk') {
-		if (signal.max >= 2000) {
-			return 'x_high';
-		}
-		if (signal.max >= 800) {
-			return 'high';
-		}
-		return signal.max >= 250 ? 'medium' : 'low';
-	}
-	if (signal.unit === '/yr') {
-		if (signal.max >= 96000) {
-			return 'x_high';
-		}
-		if (signal.max >= 60000) {
-			return 'high';
-		}
-		return signal.max >= 24000 ? 'medium' : 'low';
-	}
-	if (signal.max >= 5000) {
+function rssLeadsMoneyPriority(signal, cvFit) {
+	var portfolioAvailable = Boolean(String(rssLeadsGetSavedCvProfile() || '').trim());
+	if (portfolioAvailable && (cvFit === 'high' || cvFit === 'extreme')) {
 		return 'x_high';
 	}
-	if (signal.max >= 1000) {
+	if (signal && signal.monthly >= 1000) {
 		return 'high';
 	}
-	return signal.max >= 200 ? 'medium' : 'low';
+	return portfolioAvailable ? 'medium' : 'low';
 }
 
 function rssLeadsMoneySignals(text) {
@@ -410,15 +385,10 @@ function rssLeadsFallbackAiResult(entry) {
 	}
 	var signals = rssLeadsMoneySignals(combined);
 	var bestMoney = signals[0] || null;
+	var cvFit = rssLeadsCvFit(combined);
 	if (sourceLower.indexOf('high priority') !== -1 || sourceLower.indexOf('medium-high') !== -1 || sourceLower.indexOf('medium high') !== -1) {
-		var highPriority = rssLeadsMoneyPriority(bestMoney);
+		var highPriority = rssLeadsMoneyPriority(bestMoney, cvFit);
 		var highHourly = rssLeadsBestHourlySignal(signals);
-		if (rssLeadsPriorityRank(highPriority) < rssLeadsPriorityRank('medium')) {
-			highPriority = 'medium';
-		}
-		if (highPriority !== 'x_high' && rssLeadsExtremelyRelevantSignal(combined)) {
-			highPriority = 'x_high';
-		}
 		var highMonthlyAmount = (highPriority === 'medium' || highPriority === 'high' || highPriority === 'x_high') && bestMoney && bestMoney.unit !== '/hr' ? rssLeadsMoneyLabel(bestMoney.currency, bestMoney.min, bestMoney.max, bestMoney.unit) : '';
 		var highHourlyAmount = highHourly ? rssLeadsMoneyLabel(highHourly.currency, highHourly.min, highHourly.max, highHourly.unit) : '';
 		highPriority = rssLeadsHighRequiresPayment(highPriority, highMonthlyAmount || highHourlyAmount);
@@ -428,7 +398,8 @@ function rssLeadsFallbackAiResult(entry) {
 			summary: '',
 			monthly_amount: highMonthlyAmount,
 			hourly_amount: highHourlyAmount,
-			job_type: rssLeadsFallbackJobType(combined),
+				job_type: rssLeadsFallbackJobType(combined),
+				cv_fit: cvFit,
 			scam_likelihood: 0
 		};
 	}
@@ -442,7 +413,7 @@ function rssLeadsFallbackAiResult(entry) {
 			scam_likelihood: 0
 		};
 	}
-	var priority = rssLeadsMoneyPriority(bestMoney);
+	var priority = rssLeadsMoneyPriority(bestMoney, cvFit);
 	if (!bestMoney && !rssLeadsTitleLooksHiring(title)) {
 		priority = 'not_hiring';
 	} else if (priority !== 'x_high' && rssLeadsExtremelyRelevantSignal(combined)) {
@@ -459,6 +430,7 @@ function rssLeadsFallbackAiResult(entry) {
 		monthly_amount: monthlyAmount,
 		hourly_amount: hourlyAmount,
 		job_type: priority === 'not_hiring' ? '' : rssLeadsFallbackJobType(combined),
+		cv_fit: priority === 'not_hiring' ? 'low' : cvFit,
 		scam_likelihood: 0
 	};
 }
@@ -485,13 +457,13 @@ function rssLeadsDisplayResultForEntry(entry, result) {
 	var signals = rssLeadsMoneySignals(context);
 	var bestMoney = signals[0] || null;
 	var hourly = rssLeadsBestHourlySignal(signals);
-	var moneyPriority = rssLeadsMoneyPriority(bestMoney);
+	var cvFit = result && result.cv_fit ? rssLeadsNormalizeCvFit(result.cv_fit) : rssLeadsCvFit(context);
+	var moneyPriority = rssLeadsMoneyPriority(bestMoney, cvFit);
 	if (rssLeadsPriorityRank(priority) < rssLeadsPriorityRank('medium') && rssLeadsPriorityRank(moneyPriority) >= rssLeadsPriorityRank('medium')) {
 		priority = 'medium';
 	}
-	if (priority !== 'x_high' && (moneyPriority === 'x_high' || rssLeadsExtremelyRelevantSignal(context))) {
-		priority = 'x_high';
-	}
+	priority = moneyPriority;
+	display.cv_fit = cvFit;
 	if (hourly && !String(display.hourly_amount || '').trim()) {
 		display.hourly_amount = rssLeadsMoneyLabel(hourly.currency, hourly.min, hourly.max, hourly.unit);
 	}

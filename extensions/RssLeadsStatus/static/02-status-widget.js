@@ -42,14 +42,63 @@ function rssLeadsGetSavedCvProfile() {
 }
 
 function rssLeadsSaveCvProfile(value) {
+	value = String(value || '').trim();
 	try {
-		window.localStorage.setItem(rssLeadsCvProfileStorageKey, String(value || '').trim());
+		window.localStorage.setItem(rssLeadsCvProfileStorageKey, value);
 	} catch (error) {
 		rssLeadsShowToast('CV profile not saved', 'Browser storage is unavailable for this FreshRSS page.', 'error');
 		return false;
 	}
 	rssLeadsUpdateCvProfileButton();
+	rssLeadsPersistCvProfile(value);
 	return true;
+}
+
+function rssLeadsPersistCvProfile(value) {
+	value = String(value || '').trim();
+	rssLeadsProfileSyncValue = value;
+	if (rssLeadsProfileSyncPending) {
+		return;
+	}
+	rssLeadsProfileSyncPending = true;
+	var pendingValue = value;
+	window.fetch(rssLeadsProfileUrl, {
+		method: 'POST',
+		credentials: 'same-origin',
+		cache: 'no-store',
+		headers: { 'Content-Type': 'application/json' },
+		body: JSON.stringify({ profile: pendingValue })
+	}).catch(function () {
+		rssLeadsShowToast('CV profile sync failed', 'The profile remains saved in this browser, but feed fit scoring cannot use it yet.', 'warning');
+	}).finally(function () {
+		rssLeadsProfileSyncPending = false;
+		if (rssLeadsProfileSyncValue !== pendingValue) {
+			rssLeadsPersistCvProfile(rssLeadsProfileSyncValue);
+		}
+	});
+}
+
+function rssLeadsFetchCvProfile() {
+	return window.fetch(rssLeadsProfileUrl, { credentials: 'same-origin', cache: 'no-store' })
+		.then(function (response) {
+			if (!response.ok) {
+				throw new Error('status ' + response.status);
+			}
+			return response.json();
+		})
+		.then(function (data) {
+			var local = rssLeadsGetSavedCvProfile();
+			var remote = String(data && data.profile || '').trim();
+			if (remote && !local) {
+				window.localStorage.setItem(rssLeadsCvProfileStorageKey, remote);
+				rssLeadsUpdateCvProfileButton();
+			} else if (local && !remote && data && data.writable) {
+				rssLeadsPersistCvProfile(local);
+			}
+		})
+		.catch(function () {
+			return null;
+		});
 }
 
 function rssLeadsUpdateCvProfileButton() {
@@ -116,7 +165,7 @@ function rssLeadsRenderCvProfilePanel() {
 	save.addEventListener('click', function () {
 		if (rssLeadsSaveCvProfile(rssLeadsCvProfileTextarea.value)) {
 			rssLeadsCvProfilePanel.hidden = true;
-			rssLeadsShowToast('CV profile saved', 'Quick apply will use this profile for future ChatGPT prompts.', 'success');
+			rssLeadsShowToast('CV profile saved', 'Quick apply and feed fit scoring will use this profile.', 'success');
 		}
 	});
 	var clear = document.createElement('button');

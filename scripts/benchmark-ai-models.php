@@ -1,6 +1,8 @@
 <?php
 declare(strict_types=1);
 
+require_once __DIR__ . '/lib/RssLeads/Support.php';
+
 $user = getenv('RSS_LEADS_USER') ?: (getenv('FRESHRSS_USER') ?: 'invictine');
 $dbPath = getenv('FRESHRSS_DB') ?: "/var/www/FreshRSS/data/users/{$user}/db.sqlite";
 $apiKey = getenv('GEMINI_API_KEY') ?: '';
@@ -50,39 +52,11 @@ if (empty($models)) {
 }
 
 function normalize_model_id(string $model): string {
-	$model = trim($model);
-	$aliases = [
-		'gemini-3.1-pro' => 'gemini-3.1-pro-preview',
-		'gemini3.1pro' => 'gemini-3.1-pro-preview',
-		'gemini-3.1-pro-preview' => 'gemini-3.1-pro-preview',
-		'gemini3.1propreview' => 'gemini-3.1-pro-preview',
-		'gemini-3.1-flash' => 'gemini-3-flash-preview',
-		'gemini3.1flash' => 'gemini-3-flash-preview',
-		'gemini-3-flash' => 'gemini-3-flash-preview',
-		'gemini3flash' => 'gemini-3-flash-preview',
-		'gemini-3.1-flash-lite' => 'gemini-3.1-flash-lite',
-		'gemini3.1flashlite' => 'gemini-3.1-flash-lite',
-		'gemma4b' => 'gemma-4-31b-it',
-		'gemma-4b' => 'gemma-4-31b-it',
-		'gemma-4-b' => 'gemma-4-31b-it',
-		'gemma4-31b' => 'gemma-4-31b-it',
-		'gemma-4-31b' => 'gemma-4-31b-it',
-		'gemma31b' => 'gemma-4-31b-it',
-		'gemma4-26b' => 'gemma-4-26b-a4b-it',
-		'gemma-4-26b' => 'gemma-4-26b-a4b-it',
-	];
-	$key = strtolower(str_replace([' ', '_'], ['', '-'], $model));
-	return $aliases[$key] ?? $model;
+	return RssLeadsModelIds::normalize($model);
 }
 
 function compact_text(string $html, int $limit): string {
-	$text = html_entity_decode(strip_tags($html), ENT_QUOTES | ENT_HTML5, 'UTF-8');
-	$text = preg_replace('/\s+/u', ' ', $text) ?? $text;
-	$text = trim($text);
-	if (mb_strlen($text, 'UTF-8') > $limit) {
-		$text = mb_substr($text, 0, $limit, 'UTF-8');
-	}
-	return $text;
+	return RssLeadsText::compact($html, $limit);
 }
 
 function gemini_text(array $response): string {
@@ -548,8 +522,7 @@ function call_judge(string $apiKey, string $judgeModel, string $judgeAgent, stri
 	];
 }
 
-$db = new PDO('sqlite:' . $dbPath);
-$db->setAttribute(PDO::ATTR_ERRMODE, PDO::ERRMODE_EXCEPTION);
+$db = RssLeadsDb::sqlite($dbPath);
 $entryIds = array_values(array_filter(array_map('trim', explode(',', getenv('AI_BENCHMARK_ENTRY_IDS') ?: '')), static fn(string $id): bool => preg_match('/^\d+$/', $id) === 1));
 if (!empty($entryIds)) {
 	$entryIds = array_slice(array_unique($entryIds), 0, $sampleSize);
@@ -565,7 +538,7 @@ if (!empty($entryIds)) {
 		FROM entry e
 		JOIN feed f ON f.id = e.id_feed
 		WHERE (f.name LIKE "Reddit Leads%" OR e.link LIKE "%reddit.com/r/%")
-		  AND f.name != "High Priority Reddit Leads"
+		  AND f.name NOT IN ("High Priority Reddit Leads", "High Reddit Leads", "High + X-High Reddit Leads", "Medium Priority Reddit Leads", "Low-Medium Reddit Leads", "Low Priority Reddit Leads", "Not Hiring Reddit Leads")
 		ORDER BY e.date DESC
 		LIMIT :limit');
 	$stmt->bindValue(':limit', $sampleSize, PDO::PARAM_INT);

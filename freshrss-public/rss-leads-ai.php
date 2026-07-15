@@ -4,6 +4,11 @@ declare(strict_types=1);
 header('Content-Type: application/json; charset=utf-8');
 header('Cache-Control: no-store');
 
+$supportPath = '/opt/rss-leads-stack/scripts/lib/RssLeads/Support.php';
+if (is_file($supportPath)) {
+	require_once $supportPath;
+}
+
 $user = getenv('RSS_LEADS_USER') ?: (getenv('FRESHRSS_USER') ?: 'invictine');
 $dbPath = getenv('FRESHRSS_DB') ?: "/var/www/FreshRSS/data/users/{$user}/db.sqlite";
 $statePath = getenv('AI_FILTER_STATE_FILE') ?: "/var/www/FreshRSS/data/users/{$user}/rss_leads_ai_state.json";
@@ -35,6 +40,9 @@ $response = [
 ];
 
 function read_ai_state(string $path): array {
+	if (class_exists('RssLeadsJsonFile')) {
+		return RssLeadsJsonFile::readArray($path);
+	}
 	if (!is_file($path)) {
 		return [];
 	}
@@ -44,11 +52,18 @@ function read_ai_state(string $path): array {
 }
 
 function read_benchmark_report(string $path): ?array {
-	if (!is_file($path)) {
-		return null;
+	if (class_exists('RssLeadsJsonFile')) {
+		if (!is_file($path)) {
+			return null;
+		}
+		$decoded = RssLeadsJsonFile::readArray($path);
+	} else {
+		if (!is_file($path)) {
+			return null;
+		}
+		$json = file_get_contents($path);
+		$decoded = is_string($json) ? json_decode($json, true) : null;
 	}
-	$json = file_get_contents($path);
-	$decoded = is_string($json) ? json_decode($json, true) : null;
 	if (!is_array($decoded)) {
 		return null;
 	}
@@ -193,13 +208,14 @@ function ai_table_exists(PDO $db, string $table): bool {
 	return $stmt->fetchColumn() !== false;
 }
 
-function latest_ai_by_link_sql(bool $hasMonthlyAmount, bool $hasJobType, bool $hasScamLikelihood): string {
+function latest_ai_by_link_sql(bool $hasMonthlyAmount, bool $hasJobType, bool $hasCvFit, bool $hasScamLikelihood): string {
 	$monthlyAmountSelect = $hasMonthlyAmount ? 'monthly_amount' : "'' AS monthly_amount";
 	$jobTypeSelect = $hasJobType ? 'job_type' : "'' AS job_type";
+	$cvFitSelect = $hasCvFit ? 'cv_fit' : "'low' AS cv_fit";
 	$scamLikelihoodSelect = $hasScamLikelihood ? 'scam_likelihood' : '0 AS scam_likelihood';
-	return 'SELECT entry_id, link, summary, priority, monthly_amount, job_type, scam_likelihood, model, updated_at
+	return 'SELECT entry_id, link, summary, priority, monthly_amount, job_type, cv_fit, scam_likelihood, model, updated_at
 		FROM (
-			SELECT entry_id, link, summary, priority, ' . $monthlyAmountSelect . ', ' . $jobTypeSelect . ', ' . $scamLikelihoodSelect . ', model, updated_at,
+			SELECT entry_id, link, summary, priority, ' . $monthlyAmountSelect . ', ' . $jobTypeSelect . ', ' . $cvFitSelect . ', ' . $scamLikelihoodSelect . ', model, updated_at,
 				ROW_NUMBER() OVER (PARTITION BY link ORDER BY updated_at DESC, entry_id DESC) AS rn
 			FROM rss_leads_ai
 		)
@@ -214,8 +230,13 @@ try {
 		$response['status']['benchmark'] = read_benchmark_report($benchmarkPath);
 	}
 
-	$db = new PDO('sqlite:' . $dbPath);
-	$db->setAttribute(PDO::ATTR_ERRMODE, PDO::ERRMODE_EXCEPTION);
+	if (class_exists('RssLeadsDb')) {
+		$db = RssLeadsDb::sqlite($dbPath);
+	} else {
+		$db = new PDO('sqlite:' . $dbPath);
+		$db->setAttribute(PDO::ATTR_ERRMODE, PDO::ERRMODE_EXCEPTION);
+		$db->exec('PRAGMA busy_timeout = 10000');
+	}
 
 	if (!ai_table_exists($db, 'rss_leads_ai')) {
 		$response['ok'] = true;
@@ -224,8 +245,9 @@ try {
 	}
 	$hasMonthlyAmount = ai_table_has_column($db, 'monthly_amount');
 	$hasJobType = ai_table_has_column($db, 'job_type');
+	$hasCvFit = ai_table_has_column($db, 'cv_fit');
 	$hasScamLikelihood = ai_table_has_column($db, 'scam_likelihood');
-	$latestSql = latest_ai_by_link_sql($hasMonthlyAmount, $hasJobType, $hasScamLikelihood);
+	$latestSql = latest_ai_by_link_sql($hasMonthlyAmount, $hasJobType, $hasCvFit, $hasScamLikelihood);
 
 	if ($includeStatus) {
 	foreach ($db->query('SELECT priority, COUNT(*) AS count FROM (' . $latestSql . ') GROUP BY priority') as $row) {
@@ -312,7 +334,7 @@ try {
 		}
 	}
 
-	$latest = $db->query('SELECT entry_id, summary, priority, monthly_amount, job_type, scam_likelihood, model, updated_at FROM (' . $latestSql . ') ORDER BY updated_at DESC LIMIT 1')->fetch(PDO::FETCH_ASSOC);
+	$latest = $db->query('SELECT entry_id, summary, priority, monthly_amount, job_type, cv_fit, scam_likelihood, model, updated_at FROM (' . $latestSql . ') ORDER BY updated_at DESC LIMIT 1')->fetch(PDO::FETCH_ASSOC);
 	if (is_array($latest)) {
 		$response['status']['latest_summary'] = [
 			'entry_id' => (string)$latest['entry_id'],
@@ -320,6 +342,7 @@ try {
 			'priority' => (string)$latest['priority'],
 			'monthly_amount' => (string)$latest['monthly_amount'],
 			'job_type' => (string)$latest['job_type'],
+			'cv_fit' => (string)$latest['cv_fit'],
 			'scam_likelihood' => max(0, min(100, (int)$latest['scam_likelihood'])),
 			'model' => (string)$latest['model'],
 			'updated_at' => (int)$latest['updated_at'],
@@ -335,6 +358,9 @@ try {
 		$directJobType = $hasJobType
 			? "COALESCE(direct.job_type, by_link.job_type, '')"
 			: "COALESCE(by_link.job_type, '')";
+		$directCvFit = $hasCvFit
+			? "COALESCE(direct.cv_fit, by_link.cv_fit, 'low')"
+			: "COALESCE(by_link.cv_fit, 'low')";
 		$directScamLikelihood = $hasScamLikelihood
 			? "COALESCE(direct.scam_likelihood, by_link.scam_likelihood, 0)"
 			: "COALESCE(by_link.scam_likelihood, 0)";
@@ -346,6 +372,7 @@ try {
 				COALESCE(direct.priority, by_link.priority) AS priority,
 				{$directMonthlyAmount} AS monthly_amount,
 				{$directJobType} AS job_type,
+				{$directCvFit} AS cv_fit,
 				{$directScamLikelihood} AS scam_likelihood,
 				COALESCE(direct.model, by_link.model) AS model,
 				COALESCE(direct.updated_at, by_link.updated_at) AS updated_at
@@ -358,7 +385,7 @@ try {
 		$stmt->execute($ids);
 	} else {
 		$limit = max(1, min(200, (int)($_GET['limit'] ?? 100)));
-		$stmt = $db->prepare('SELECT entry_id AS requested_entry_id, summary, priority, monthly_amount, job_type, scam_likelihood, model, updated_at FROM (' . $latestSql . ') ORDER BY updated_at DESC LIMIT ?');
+		$stmt = $db->prepare('SELECT entry_id AS requested_entry_id, summary, priority, monthly_amount, job_type, cv_fit, scam_likelihood, model, updated_at FROM (' . $latestSql . ') ORDER BY updated_at DESC LIMIT ?');
 		$stmt->execute([$limit]);
 	}
 
@@ -369,6 +396,7 @@ try {
 			'priority' => (string)$row['priority'],
 			'monthly_amount' => (string)$row['monthly_amount'],
 			'job_type' => (string)$row['job_type'],
+			'cv_fit' => (string)$row['cv_fit'],
 			'scam_likelihood' => max(0, min(100, (int)$row['scam_likelihood'])),
 			'model' => (string)$row['model'],
 			'updated_at' => (int)$row['updated_at'],
@@ -376,8 +404,18 @@ try {
 	}
 	$response['ok'] = true;
 } catch (Throwable $e) {
-	http_response_code(500);
-	$response['error'] = $e->getMessage();
+	$message = $e->getMessage();
+	if (stripos($message, 'database is locked') !== false && $includeStatus && !empty($response['status']['state'])) {
+		$response['ok'] = true;
+		$response['error'] = 'database_locked';
+		$response['status']['analytics'] = [
+			'db_locked' => true,
+			'message' => 'FreshRSS database is busy; showing live worker state without classification analytics.',
+		];
+	} else {
+		http_response_code(500);
+		$response['error'] = $message;
+	}
 }
 
 echo json_encode($response, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE);
