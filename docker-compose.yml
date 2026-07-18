@@ -94,6 +94,34 @@ services:
       - ./scripts/backfill-freshrss-ai-tags.php:/opt/rss-leads-stack/scripts/backfill-freshrss-ai-tags.php:ro
       - ./scripts/enforce-freshrss-retention.php:/opt/rss-leads-stack/scripts/enforce-freshrss-retention.php:ro
 
+  mass-apply:
+    build:
+      context: .
+      dockerfile: Dockerfile.mass-apply
+      args:
+        CODEX_VERSION: ${CODEX_VERSION:-0.144.4}
+    image: rss-leads-mass-apply:latest
+    container_name: rss-leads-mass-apply
+    restart: unless-stopped
+    read_only: true
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    environment:
+      TZ: Asia/Kolkata
+      MASS_APPLY_PORT: 8092
+      MASS_APPLY_ALLOWED_ORIGINS: ${MASS_APPLY_ALLOWED_ORIGINS:-http://192.168.1.70}
+      MASS_APPLY_MAX_LEADS: ${MASS_APPLY_MAX_LEADS:-20}
+      MASS_APPLY_CODEX_TIMEOUT_SECONDS: ${MASS_APPLY_CODEX_TIMEOUT_SECONDS:-240}
+    ports:
+      - "8092:8092"
+    tmpfs:
+      - /tmp:mode=1777,size=32m
+      - /workspace:mode=0700,size=1m,uid=10001,gid=10001
+    volumes:
+      - codex_auth:/home/codex/.codex
+
   rssbridge:
     image: rssbridge/rss-bridge:latest
     container_name: rssbridge
@@ -108,3 +136,4 @@ services:
 volumes:
   freshrss_data:
   freshrss_extensions:
+  codex_auth:

@@ -1,0 +1,21 @@
+FROM node:22-bookworm-slim
+
+ARG CODEX_VERSION=0.144.4
+
+RUN npm install --global "@openai/codex@${CODEX_VERSION}" \
+	&& useradd --create-home --uid 10001 --shell /usr/sbin/nologin codex \
+	&& install -d -o codex -g codex /app /workspace /home/codex/.codex
+
+COPY --chown=codex:codex mass-apply/server.js mass-apply/draft-schema.json /app/
+
+USER codex
+WORKDIR /app
+
+ENV HOME=/home/codex \
+	CODEX_HOME=/home/codex/.codex \
+	MASS_APPLY_PORT=8092 \
+	TZ=Asia/Kolkata
+
+EXPOSE 8092
+
+CMD ["node", "/app/server.js"]

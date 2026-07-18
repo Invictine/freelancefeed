@@ -5,6 +5,7 @@
 function rssLeadsModulesReady() {
 	return [
 		'rssLeadsAnnotateQuickApplyButtons',
+		'rssLeadsAnnotateMassApplyButtons',
 		'rssLeadsAnnotateSubreddits',
 		'rssLeadsFetchAiResults',
 		'rssLeadsOrderLeadSidebar',
@@ -60,6 +61,7 @@ function rssLeadsQueueSubredditAnnotation(mutations) {
 		rssLeadsRenderFallbackAiResults({});
 		rssLeadsUpdateAllRedditLeadsVisibility();
 		rssLeadsAnnotateQuickApplyButtons();
+		rssLeadsAnnotateMassApplyButtons();
 		rssLeadsQueueAiAnnotation();
 		rssLeadsRestoreScrollAnchor(scrollAnchor);
 	});
@@ -72,6 +74,7 @@ function rssLeadsWatchSubredditEntries() {
 	rssLeadsRenderFallbackAiResults({});
 	rssLeadsUpdateAllRedditLeadsVisibility();
 	rssLeadsAnnotateQuickApplyButtons();
+	rssLeadsAnnotateMassApplyButtons();
 	if (rssLeadsSubredditObserver || !window.MutationObserver) {
 		return;
 	}
@@ -195,6 +198,7 @@ function rssLeadsInit() {
 	rssLeadsFetchCvProfile();
 	rssLeadsInstallScrollStabilizer();
 	rssLeadsWatchSubredditEntries();
+	rssLeadsMassApplyInit();
 	rssLeadsFetchAiResults(true);
 	rssLeadsTimerId = window.setInterval(rssLeadsUpdateTimer, 1000);
 	rssLeadsPollId = window.setInterval(rssLeadsPollStatus, 15000);
