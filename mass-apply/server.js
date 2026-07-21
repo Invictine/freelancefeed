@@ -21,7 +21,7 @@ const allowedOrigins = new Set(
 );
 const jobs = new Map();
 let loginProcess = null;
-let loginState = { running: false, output: '', exitCode: null, startedAt: 0 };
+let loginState = { running: false, output: '', exitCode: null, startedAt: 0, finishedAt: 0 };
 let activeJobId = '';
 
 function integerEnv(name, fallback, minimum, maximum) {
@@ -151,7 +151,7 @@ async function codexStatus() {
 
 function startDeviceLogin() {
 	if (loginProcess && loginState.running) return loginState;
-	loginState = { running: true, output: '', exitCode: null, startedAt: Date.now() };
+	loginState = { running: true, output: '', exitCode: null, startedAt: Date.now(), finishedAt: 0 };
 	loginProcess = spawn(codexBinary, ['login', '--device-auth'], {
 		cwd: process.env.MASS_APPLY_APP_DIR || '/app',
 		env: codexEnvironment(),
@@ -166,11 +166,13 @@ function startDeviceLogin() {
 		append(error.message);
 		loginState.running = false;
 		loginState.exitCode = -1;
+		loginState.finishedAt = Date.now();
 		loginProcess = null;
 	});
 	loginProcess.on('close', (code) => {
 		loginState.running = false;
 		loginState.exitCode = code ?? -1;
+		loginState.finishedAt = Date.now();
 		loginProcess = null;
 	});
 	setTimeout(() => {
@@ -274,9 +276,13 @@ async function handle(request, response) {
 		return sendJson(request, response, 200, { codex: await codexStatus(), login: loginState, maxLeads });
 	}
 	if (request.method === 'POST' && url.pathname === '/api/login') {
+		const status = await codexStatus();
+		if (status.authenticated) {
+			return sendJson(request, response, 200, { codex: status, login: loginState });
+		}
 		startDeviceLogin();
 		await new Promise((resolve) => setTimeout(resolve, 750));
-		return sendJson(request, response, 202, { login: loginState });
+		return sendJson(request, response, 202, { codex: status, login: loginState });
 	}
 	if (request.method === 'POST' && url.pathname === '/api/jobs') {
 		const payload = await readJson(request);
@@ -286,8 +292,14 @@ async function handle(request, response) {
 		}
 		const status = await codexStatus();
 		if (!status.authenticated) return sendJson(request, response, 409, { error: 'codex_not_authenticated', detail: status.detail });
-		const leads = payload.leads.map(normalizeLead);
+		let leads;
+		try {
+			leads = payload.leads.map(normalizeLead);
+		} catch (error) {
+			return sendJson(request, response, 400, { error: cleanText(error.message, 2000) || 'invalid_lead' });
+		}
 		const profile = cleanText(payload.profile, 12000);
+		if (!profile) return sendJson(request, response, 400, { error: 'profile_is_required' });
 		const instructions = cleanText(payload.instructions, 5000) || 'Write a direct, human 90-140 word DM. Show understanding, cite only relevant profile proof, and ask one concrete next-step question.';
 		const id = crypto.randomUUID();
 		const job = { id, status: 'queued', current: 0, total: leads.length, results: [], createdAt: Date.now(), finishedAt: 0 };

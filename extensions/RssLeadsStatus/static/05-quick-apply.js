@@ -2,6 +2,9 @@
 
 // Quick Apply prompt generation and buttons.
 
+var rssLeadsQuickApplyPanel;
+var rssLeadsQuickApplyActiveRoot;
+
 function rssLeadsFirstText(root, selectors) {
 	for (var index = 0; index < selectors.length; index++) {
 		var node = root.querySelector(selectors[index]);
@@ -193,6 +196,10 @@ function rssLeadsCopyQuickApplyPrompt(prompt) {
 	});
 }
 
+function rssLeadsQuickApplyChatGptUrl(prompt) {
+	return 'https://chatgpt.com/?q=' + encodeURIComponent(prompt);
+}
+
 function rssLeadsRedditComposeUrl(username, subject, message) {
 	var params = [];
 	if (username) {
@@ -215,12 +222,18 @@ function rssLeadsSetQuickApplyButtonState(root, state) {
 	Array.prototype.forEach.call(root.querySelectorAll('.rss-leads-quick-apply-btn'), function (button) {
 		var compact = button.classList.contains('rss-leads-quick-apply-compact');
 		button.setAttribute('data-quick-apply-state', state);
-		if (state === 'awaiting-response') {
-			button.textContent = compact ? 'Paste DM' : 'Paste ChatGPT reply into Reddit';
-			button.title = 'Copy the finished ChatGPT response, then click to put it in the Reddit DM';
+		if (state === 'draft-ready') {
+			button.textContent = compact ? 'Open DM' : 'Review application DM';
+			button.title = 'Review the prepared text and open the Reddit DM';
+		} else if (state === 'opened') {
+			button.textContent = compact ? 'Reopen' : 'Reopen application DM';
+			button.title = 'Review or reopen this application DM';
+		} else if (state === 'awaiting-response') {
+			button.textContent = compact ? 'Finish DM' : 'Finish quick apply';
+			button.title = 'Paste the finished ChatGPT response and open Reddit';
 		} else {
 			button.textContent = compact ? 'Apply' : 'Quick apply';
-			button.title = 'Create an application DM in ChatGPT and open Reddit';
+			button.title = 'Draft an application DM with ChatGPT, then open Reddit';
 		}
 	});
 }
@@ -236,23 +249,6 @@ function rssLeadsFocusWindow(opened) {
 	}
 }
 
-function rssLeadsOpenOrUpdateRedditDm(session, message) {
-	var url = rssLeadsRedditComposeUrl(session.username, session.subject, message);
-	var opened = session.redditWindow;
-	try {
-		if (opened && !opened.closed) {
-			opened.location.href = url;
-			opened.focus();
-			return opened;
-		}
-	} catch (error) {
-		// Reopen the compose page when the browser blocks cross-origin tab reuse.
-	}
-	opened = window.open(url, '_blank');
-	rssLeadsFocusWindow(opened);
-	return opened;
-}
-
 function rssLeadsUseQuickApplyResponse(root, response) {
 	var session = root._rssLeadsQuickApplySession;
 	response = String(response || '').trim();
@@ -264,14 +260,9 @@ function rssLeadsUseQuickApplyResponse(root, response) {
 		rssLeadsShowToast('Prompt is still copied', 'Use ChatGPT\'s Copy button on the finished response, then click Paste DM again.', 'warning');
 		return;
 	}
-	var opened = rssLeadsOpenOrUpdateRedditDm(session, response);
-	if (!opened) {
-		rssLeadsShowToast('Reddit popup blocked', 'Allow popups for FreshRSS, then click Paste DM again.', 'error');
-		return;
-	}
-	root._rssLeadsQuickApplySession = null;
-	rssLeadsSetQuickApplyButtonState(root, 'ready');
-	rssLeadsShowToast('Reddit DM filled', 'Review the ChatGPT response in Reddit before sending it.', 'success');
+	session.response = response;
+	rssLeadsSetQuickApplyButtonState(root, 'draft-ready');
+	rssLeadsQuickApplyRender(root);
 }
 
 function rssLeadsPasteQuickApplyResponse(root) {
@@ -279,22 +270,120 @@ function rssLeadsPasteQuickApplyResponse(root) {
 		navigator.clipboard.readText().then(function (response) {
 			rssLeadsUseQuickApplyResponse(root, response);
 		}).catch(function () {
-			var response = window.prompt('Paste the finished ChatGPT DM here. It will be placed into the Reddit message:');
-			if (response !== null) {
-				rssLeadsUseQuickApplyResponse(root, response);
-			}
+			var textarea = rssLeadsQuickApplyPanel && rssLeadsQuickApplyPanel.querySelector('.rss-leads-quick-apply-draft');
+			if (textarea) textarea.focus();
+			rssLeadsShowToast('Paste into the DM box', 'Clipboard access was blocked, so use Ctrl+V or long-press Paste.', 'warning');
 		});
 		return;
 	}
-	var response = window.prompt('Paste the finished ChatGPT DM here. It will be placed into the Reddit message:');
-	if (response !== null) {
-		rssLeadsUseQuickApplyResponse(root, response);
+	var textarea = rssLeadsQuickApplyPanel && rssLeadsQuickApplyPanel.querySelector('.rss-leads-quick-apply-draft');
+	if (textarea) textarea.focus();
+	rssLeadsShowToast('Paste into the DM box', 'Use Ctrl+V or long-press Paste, then review the text.', 'info');
+}
+
+function rssLeadsQuickApplyOpenChatGpt(root) {
+	var session = root && root._rssLeadsQuickApplySession;
+	if (!session) return;
+	var opened = window.open(rssLeadsQuickApplyChatGptUrl(session.prompt), '_blank');
+	rssLeadsCopyQuickApplyPrompt(session.prompt);
+	rssLeadsFocusWindow(opened);
+	if (opened) {
+		rssLeadsShowToast('ChatGPT opened', 'Generate the DM, copy it, then return to the Quick Apply panel.', 'success');
+	} else {
+		rssLeadsShowToast('ChatGPT popup blocked', 'Allow popups for FreshRSS, then select Open ChatGPT.', 'error');
 	}
+}
+
+function rssLeadsQuickApplyOpenReddit(root) {
+	var session = root && root._rssLeadsQuickApplySession;
+	var textarea = rssLeadsQuickApplyPanel && rssLeadsQuickApplyPanel.querySelector('.rss-leads-quick-apply-draft');
+	var response = textarea ? textarea.value.trim() : String(session && session.response || '').trim();
+	if (!session || !response) {
+		rssLeadsShowToast('Paste the finished DM first', 'The Reddit button becomes available after the DM text is added.', 'warning');
+		return;
+	}
+	if (response === session.prompt || response.indexOf('Create a concise DM I can send') === 0) {
+		rssLeadsShowToast('That is the prompt, not the DM', 'Copy ChatGPT\'s finished response and paste it into the DM box.', 'warning');
+		return;
+	}
+	session.response = response;
+	var opened = window.open(rssLeadsRedditComposeUrl(session.username, session.subject, response), '_blank');
+	rssLeadsFocusWindow(opened);
+	if (!opened) {
+		rssLeadsShowToast('Reddit popup blocked', 'Allow popups for FreshRSS, then select Open Reddit DM again.', 'error');
+		return;
+	}
+	session.opened = true;
+	rssLeadsSetQuickApplyButtonState(root, 'opened');
+	rssLeadsQuickApplyPanel.hidden = true;
+	rssLeadsShowToast('Reddit DM filled', 'Review the recipient and message, then send it manually.', 'success');
+}
+
+function rssLeadsQuickApplyBuildPanel() {
+	if (rssLeadsQuickApplyPanel) return;
+	rssLeadsQuickApplyPanel = document.createElement('section');
+	rssLeadsQuickApplyPanel.id = 'rss-leads-quick-apply-panel';
+	rssLeadsQuickApplyPanel.hidden = true;
+	rssLeadsQuickApplyPanel.setAttribute('aria-label', 'Quick Apply');
+	rssLeadsQuickApplyPanel.innerHTML = [
+		'<div class="rss-leads-quick-apply-panel-header">',
+		'<div><strong>Quick Apply</strong><span class="rss-leads-quick-apply-lead"></span></div>',
+		'<button type="button" class="rss-leads-quick-apply-close" aria-label="Close Quick Apply">Close</button>',
+		'</div>',
+		'<ol class="rss-leads-quick-apply-steps">',
+		'<li><strong>Draft</strong> in ChatGPT</li>',
+		'<li><strong>Paste and review</strong> the finished DM here</li>',
+		'<li><strong>Open Reddit</strong> with the DM filled in</li>',
+		'</ol>',
+		'<label class="rss-leads-quick-apply-label" for="rss-leads-quick-apply-draft">Finished DM</label>',
+		'<textarea id="rss-leads-quick-apply-draft" class="rss-leads-quick-apply-draft" rows="7" placeholder="Paste ChatGPT\'s finished DM here. You can edit it before opening Reddit."></textarea>',
+		'<div class="rss-leads-quick-apply-panel-actions">',
+		'<button type="button" class="rss-leads-quick-apply-secondary rss-leads-quick-apply-chatgpt">Open ChatGPT</button>',
+		'<button type="button" class="rss-leads-quick-apply-secondary rss-leads-quick-apply-paste">Paste from clipboard</button>',
+		'<button type="button" class="rss-leads-quick-apply-primary rss-leads-quick-apply-reddit" disabled>Open Reddit DM</button>',
+		'</div>',
+		'<p class="rss-leads-quick-apply-note">Nothing is sent automatically. Review the DM and use Reddit\'s Send button yourself.</p>'
+	].join('');
+	rssLeadsQuickApplyPanel.querySelector('.rss-leads-quick-apply-close').addEventListener('click', function () {
+		rssLeadsQuickApplyPanel.hidden = true;
+	});
+	rssLeadsQuickApplyPanel.querySelector('.rss-leads-quick-apply-chatgpt').addEventListener('click', function () {
+		rssLeadsQuickApplyOpenChatGpt(rssLeadsQuickApplyActiveRoot);
+	});
+	rssLeadsQuickApplyPanel.querySelector('.rss-leads-quick-apply-paste').addEventListener('click', function () {
+		rssLeadsPasteQuickApplyResponse(rssLeadsQuickApplyActiveRoot);
+	});
+	rssLeadsQuickApplyPanel.querySelector('.rss-leads-quick-apply-reddit').addEventListener('click', function () {
+		rssLeadsQuickApplyOpenReddit(rssLeadsQuickApplyActiveRoot);
+	});
+	rssLeadsQuickApplyPanel.querySelector('.rss-leads-quick-apply-draft').addEventListener('input', function (event) {
+		var root = rssLeadsQuickApplyActiveRoot;
+		var session = root && root._rssLeadsQuickApplySession;
+		if (session) session.response = event.target.value;
+		rssLeadsQuickApplyPanel.querySelector('.rss-leads-quick-apply-reddit').disabled = !event.target.value.trim();
+		if (root) rssLeadsSetQuickApplyButtonState(root, event.target.value.trim() ? 'draft-ready' : 'awaiting-response');
+	});
+	document.body.appendChild(rssLeadsQuickApplyPanel);
+}
+
+function rssLeadsQuickApplyRender(root) {
+	rssLeadsQuickApplyBuildPanel();
+	rssLeadsQuickApplyActiveRoot = root;
+	var session = root && root._rssLeadsQuickApplySession;
+	if (!session) return;
+	var leadLabel = rssLeadsQuickApplyPanel.querySelector('.rss-leads-quick-apply-lead');
+	leadLabel.textContent = session.title + (session.username ? ' · u/' + session.username : ' · recipient not detected');
+	var textarea = rssLeadsQuickApplyPanel.querySelector('.rss-leads-quick-apply-draft');
+	textarea.value = session.response || '';
+	var redditButton = rssLeadsQuickApplyPanel.querySelector('.rss-leads-quick-apply-reddit');
+	redditButton.disabled = !textarea.value.trim();
+	redditButton.textContent = session.opened ? 'Reopen Reddit DM' : 'Open Reddit DM';
+	rssLeadsQuickApplyPanel.hidden = false;
 }
 
 function rssLeadsOpenQuickApplyPrompt(root) {
 	if (root._rssLeadsQuickApplySession) {
-		rssLeadsPasteQuickApplyResponse(root);
+		rssLeadsQuickApplyRender(root);
 		return;
 	}
 	if (!rssLeadsGetSavedCvProfile()) {
@@ -304,33 +393,17 @@ function rssLeadsOpenQuickApplyPrompt(root) {
 	}
 	var lead = rssLeadsLeadContext(root);
 	var prompt = rssLeadsBuildQuickApplyPrompt(root);
-	var url = 'https://chatgpt.com/?q=' + encodeURIComponent(prompt);
-	var opened = window.open(url, '_blank');
-	var redditWindow = window.open(rssLeadsRedditComposeUrl(lead.redditUsername, rssLeadsQuickApplySubject(lead), ''), '_blank');
-	rssLeadsCopyQuickApplyPrompt(prompt);
-	rssLeadsFocusWindow(opened);
-	rssLeadsFocusWindow(redditWindow);
-	try {
-		if (opened) {
-			opened.focus();
-		}
-	} catch (error) {
-		// The browser may not permit changing the active popup.
-	}
-	if (opened) {
-		root._rssLeadsQuickApplySession = {
-			prompt: prompt,
-			username: lead.redditUsername,
-			subject: rssLeadsQuickApplySubject(lead),
-			redditWindow: redditWindow
-		};
-		rssLeadsSetQuickApplyButtonState(root, 'awaiting-response');
-		var recipient = lead.redditUsername ? 'u/' + lead.redditUsername : 'the Reddit recipient';
-		var popupNote = redditWindow ? '' : ' Reddit was blocked, but Paste DM can reopen it.';
-		rssLeadsShowToast('ChatGPT and Reddit opened', 'Copy ChatGPT\'s finished reply, then click Paste DM to fill the message to ' + recipient + '.' + popupNote, redditWindow ? 'success' : 'warning');
-	} else {
-		rssLeadsShowToast('ChatGPT popup blocked', 'Allow popups for FreshRSS, then click Quick apply again.', 'error');
-	}
+	root._rssLeadsQuickApplySession = {
+		prompt: prompt,
+		title: lead.title || 'Reddit opportunity',
+		username: lead.redditUsername,
+		subject: rssLeadsQuickApplySubject(lead),
+		response: '',
+		opened: false
+	};
+	rssLeadsSetQuickApplyButtonState(root, 'awaiting-response');
+	rssLeadsQuickApplyRender(root);
+	rssLeadsQuickApplyOpenChatGpt(root);
 }
 
 function rssLeadsCreateQuickApplyButton(root, compact) {
@@ -338,7 +411,7 @@ function rssLeadsCreateQuickApplyButton(root, compact) {
 	button.type = 'button';
 	button.className = 'btn rss-leads-quick-apply-btn ' + (compact ? 'rss-leads-quick-apply-compact' : 'rss-leads-quick-apply-expanded');
 	button.textContent = compact ? 'Apply' : 'Quick apply';
-	button.title = 'Create an application DM in ChatGPT and open Reddit';
+	button.title = 'Draft an application DM with ChatGPT, then open Reddit';
 	button.addEventListener('click', function (event) {
 		event.preventDefault();
 		event.stopPropagation();

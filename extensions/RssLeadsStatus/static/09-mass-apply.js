@@ -10,11 +10,16 @@ var rssLeadsMassApplyPanel;
 var rssLeadsMassApplyTemplate;
 var rssLeadsMassApplyStatus;
 var rssLeadsMassApplyLoginOutput = '';
+var rssLeadsMassApplyLoginPollId;
 var rssLeadsMassApplyJobId = '';
 var rssLeadsMassApplyPollId;
 var rssLeadsMassApplyTemplateStorageKey = 'rss-leads-mass-apply-instructions';
 var rssLeadsMassApplyTokenStorageKey = 'rss-leads-mass-apply-token';
 var rssLeadsMassApplyTokenInput;
+var rssLeadsMassApplyLoginButton;
+var rssLeadsMassApplyConnected = false;
+var rssLeadsMassApplySignInWindow;
+var rssLeadsMassApplyCopiedDeviceCode = '';
 
 function rssLeadsMassApplyKey(entry, lead) {
 	var entryId = entry.getAttribute && entry.getAttribute('data-entry');
@@ -69,11 +74,49 @@ function rssLeadsMassApplyRequest(path, options) {
 	return window.fetch(rssLeadsMassApplyApiUrl + path, options).then(function (response) {
 		return response.json().catch(function () { return {}; }).then(function (data) {
 			if (!response.ok) {
-				throw new Error(data.detail || data.error || ('Mass Apply HTTP ' + response.status));
+				var error = new Error(data.detail || data.error || ('Mass Apply HTTP ' + response.status));
+				error.status = response.status;
+				error.code = data.error || '';
+				throw error;
 			}
 			return data;
 		});
 	});
+}
+
+function rssLeadsMassApplyCopyText(value, description) {
+	value = String(value || '');
+	if (navigator.clipboard && window.isSecureContext) {
+		return navigator.clipboard.writeText(value).then(function () {
+			rssLeadsShowToast('Copied', description, 'success');
+		}).catch(function () {
+			window.prompt('Copy this value:', value);
+		});
+	}
+	window.prompt('Copy this value:', value);
+	return Promise.resolve();
+}
+
+function rssLeadsMassApplyLoginDetails(output) {
+	output = String(output || '');
+	var urls = output.match(/https:\/\/[^\s<>"']+/g) || [];
+	var officialUrl = '';
+	urls.some(function (candidate) {
+		candidate = candidate.replace(/[),.;]+$/, '');
+		try {
+			var parsed = new URL(candidate);
+			var host = parsed.hostname.toLowerCase();
+			if (host === 'openai.com' || host.slice(-11) === '.openai.com' || host === 'chatgpt.com' || host.slice(-12) === '.chatgpt.com') {
+				officialUrl = parsed.href;
+				return true;
+			}
+		} catch (error) {
+			// Keep looking for an official URL in the Codex output.
+		}
+		return false;
+	});
+	var codes = output.match(/\b[A-Z0-9]{4,12}(?:-[A-Z0-9]{3,12})+\b/g) || [];
+	return { url: officialUrl, code: codes.length ? codes[codes.length - 1] : '' };
 }
 
 function rssLeadsMassApplySetStatus(message, tone) {
@@ -82,6 +125,48 @@ function rssLeadsMassApplySetStatus(message, tone) {
 	}
 	rssLeadsMassApplyStatus.textContent = message;
 	rssLeadsMassApplyStatus.className = 'rss-leads-mass-status rss-leads-mass-status-' + (tone || 'info');
+}
+
+function rssLeadsMassApplySetConnected(connected, codexAuthenticated) {
+	rssLeadsMassApplyConnected = connected;
+	var helperSetup = rssLeadsMassApplyPanel && rssLeadsMassApplyPanel.querySelector('.rss-leads-mass-helper-setup');
+	var connectedRow = rssLeadsMassApplyPanel && rssLeadsMassApplyPanel.querySelector('.rss-leads-mass-connected');
+	var codexSetup = rssLeadsMassApplyPanel && rssLeadsMassApplyPanel.querySelector('.rss-leads-mass-codex-setup');
+	if (helperSetup) helperSetup.hidden = connected;
+	if (connectedRow) connectedRow.hidden = !connected;
+	if (codexSetup) codexSetup.hidden = !connected || Boolean(codexAuthenticated);
+}
+
+function rssLeadsMassApplySaveToken() {
+	var token = rssLeadsMassApplyTokenInput ? rssLeadsMassApplyTokenInput.value.trim() : '';
+	try {
+		window.localStorage.setItem(rssLeadsMassApplyTokenStorageKey, token);
+	} catch (error) {
+		// The token remains available for this page session.
+	}
+	return token;
+}
+
+function rssLeadsMassApplyUseLoginDetails(details) {
+	if (!details) return;
+	if (details.url && rssLeadsMassApplySignInWindow && !rssLeadsMassApplySignInWindow.closed) {
+		try {
+			rssLeadsMassApplySignInWindow.location.replace(details.url);
+			rssLeadsFocusWindow(rssLeadsMassApplySignInWindow);
+			rssLeadsMassApplySignInWindow.focus();
+			rssLeadsMassApplySignInWindow = null;
+		} catch (error) {
+			// The visible sign-in link remains available if the reserved tab cannot be updated.
+		}
+	}
+	if (details.code && details.code !== rssLeadsMassApplyCopiedDeviceCode && navigator.clipboard && window.isSecureContext) {
+		rssLeadsMassApplyCopiedDeviceCode = details.code;
+		navigator.clipboard.writeText(details.code).then(function () {
+			rssLeadsShowToast('Codex code copied', 'Paste it into the official sign-in page that just opened.', 'success');
+		}).catch(function () {
+			// The large Copy code button is the reliable fallback.
+		});
+	}
 }
 
 function rssLeadsMassApplyUpdateButton() {
@@ -161,6 +246,9 @@ function rssLeadsMassApplyOpenReddit(item) {
 	var opened = window.open(url, '_blank');
 	rssLeadsFocusWindow(opened);
 	if (opened) {
+		item.status = 'opened';
+		item.openedAt = Date.now();
+		rssLeadsMassApplyRenderQueue();
 		rssLeadsShowToast('Reddit draft opened', 'Review it and use Reddit\'s Send button manually.', 'success');
 	} else {
 		rssLeadsShowToast('Reddit popup blocked', 'Allow popups, then click Open Reddit DM again.', 'error');
@@ -213,13 +301,13 @@ function rssLeadsMassApplyRenderQueue() {
 		textarea.addEventListener('input', function () { item.draft = textarea.value; });
 		var error = document.createElement('p');
 		error.className = 'rss-leads-mass-item-status';
-		error.textContent = item.error || (item.status === 'generating' ? 'Generating...' : '');
+		error.textContent = item.error || (item.status === 'generating' ? 'Generating...' : (item.status === 'opened' ? 'Opened in Reddit. Review and send it manually.' : ''));
 		var actions = document.createElement('div');
 		actions.className = 'rss-leads-mass-card-actions';
 		var open = document.createElement('button');
 		open.type = 'button';
 		open.className = 'rss-leads-mass-primary';
-		open.textContent = 'Open Reddit DM';
+		open.textContent = item.status === 'opened' ? 'Reopen Reddit DM' : 'Open Reddit DM';
 		open.disabled = !item.draft;
 		open.addEventListener('click', function () { rssLeadsMassApplyOpenReddit(item); });
 		var remove = document.createElement('button');
@@ -247,32 +335,83 @@ function rssLeadsMassApplyRenderLogin(data) {
 		output.textContent = rssLeadsMassApplyLoginOutput;
 		output.hidden = !rssLeadsMassApplyLoginOutput;
 	}
+	var loginLog = rssLeadsMassApplyPanel && rssLeadsMassApplyPanel.querySelector('.rss-leads-mass-login-log');
+	if (loginLog) loginLog.hidden = !rssLeadsMassApplyLoginOutput;
+	var details = rssLeadsMassApplyLoginDetails(rssLeadsMassApplyLoginOutput);
+	rssLeadsMassApplySetConnected(true, codex.authenticated);
+	rssLeadsMassApplyUseLoginDetails(details);
+	var loginDetails = rssLeadsMassApplyPanel && rssLeadsMassApplyPanel.querySelector('.rss-leads-mass-login-details');
+	if (loginDetails) loginDetails.hidden = Boolean(codex.authenticated || (!details.url && !details.code));
+	var signInLink = rssLeadsMassApplyPanel && rssLeadsMassApplyPanel.querySelector('.rss-leads-mass-signin-link');
+	if (signInLink) {
+		signInLink.href = details.url || '#';
+		signInLink.hidden = !details.url;
+	}
+	var codeButton = rssLeadsMassApplyPanel && rssLeadsMassApplyPanel.querySelector('.rss-leads-mass-code-copy');
+	if (codeButton) {
+		codeButton.hidden = !details.code;
+		codeButton.setAttribute('data-device-code', details.code);
+		codeButton.textContent = details.code ? 'Copy code ' + details.code : 'Copy one-time code';
+	}
+	if (rssLeadsMassApplyLoginButton) {
+		rssLeadsMassApplyLoginButton.disabled = Boolean(login.running || codex.authenticated);
+		rssLeadsMassApplyLoginButton.textContent = codex.authenticated ? 'Codex paired' : (login.running ? 'Waiting for approval...' : 'Pair Codex');
+	}
 	if (codex.authenticated) {
-		rssLeadsMassApplySetStatus('Codex signed in and ready.', 'success');
+		if (rssLeadsMassApplySignInWindow && !rssLeadsMassApplySignInWindow.closed) rssLeadsMassApplySignInWindow.close();
+		rssLeadsMassApplySignInWindow = null;
+		rssLeadsMassApplySetStatus('Helper connected · Codex paired and ready.', 'success');
 	} else if (login.running) {
-		rssLeadsMassApplySetStatus('Codex sign-in is waiting for device approval. Follow the instructions below.', 'warning');
+		rssLeadsMassApplySetStatus('Finish pairing on the official OpenAI page. This status updates automatically.', 'warning');
+	} else if (login.exitCode !== null && login.exitCode !== 0) {
+		rssLeadsMassApplySetStatus('Codex pairing stopped before approval. Select Pair Codex to try again.', 'error');
 	} else {
-		rssLeadsMassApplySetStatus('Codex is not signed in for Mass Apply.', 'warning');
+		rssLeadsMassApplySetStatus('Helper connected · pair Codex once to prepare drafts.', 'warning');
+	}
+	window.clearTimeout(rssLeadsMassApplyLoginPollId);
+	if (login.running) {
+		rssLeadsMassApplyLoginPollId = window.setTimeout(rssLeadsMassApplyCheckStatus, 1800);
 	}
 }
 
 function rssLeadsMassApplyCheckStatus() {
+	if (!rssLeadsMassApplySaveToken()) {
+		rssLeadsMassApplySetConnected(false, false);
+		rssLeadsMassApplySetStatus('Paste the helper token to connect Mass Apply.', 'warning');
+		return Promise.resolve(null);
+	}
 	return rssLeadsMassApplyRequest('/api/status').then(function (data) {
 		rssLeadsMassApplyRenderLogin(data);
 		return data;
 	}).catch(function (error) {
-		rssLeadsMassApplySetStatus('Helper unavailable: ' + error.message, 'error');
+		if (error.status === 401) {
+			rssLeadsMassApplySetConnected(false, false);
+			rssLeadsMassApplySetStatus('That helper token did not work. Paste the current token and connect again.', 'error');
+		} else {
+			rssLeadsMassApplySetStatus('Helper unavailable: ' + error.message, 'error');
+		}
 		return null;
 	});
 }
 
 function rssLeadsMassApplyLogin() {
-	rssLeadsMassApplySetStatus('Starting Codex device sign-in...', 'info');
+	rssLeadsMassApplyCopiedDeviceCode = '';
+	rssLeadsMassApplySignInWindow = window.open('about:blank', 'rss-leads-codex-pairing');
+	if (rssLeadsMassApplySignInWindow) {
+		try {
+			rssLeadsMassApplySignInWindow.document.title = 'Connecting to Codex';
+			rssLeadsMassApplySignInWindow.document.body.textContent = 'Preparing the official Codex sign-in page...';
+		} catch (error) {
+			// The tab can still be redirected once the helper returns the official URL.
+		}
+	}
+	rssLeadsMassApplySetStatus('Starting Codex pairing...', 'info');
 	return rssLeadsMassApplyRequest('/api/login', { method: 'POST', body: {} }).then(function (data) {
-		rssLeadsMassApplyRenderLogin({ login: data.login, codex: { authenticated: false } });
-		window.setTimeout(rssLeadsMassApplyCheckStatus, 2000);
+		rssLeadsMassApplyRenderLogin(data);
 	}).catch(function (error) {
-		rssLeadsMassApplySetStatus('Could not start sign-in: ' + error.message, 'error');
+		if (rssLeadsMassApplySignInWindow && !rssLeadsMassApplySignInWindow.closed) rssLeadsMassApplySignInWindow.close();
+		rssLeadsMassApplySignInWindow = null;
+		rssLeadsMassApplySetStatus('Could not start Codex pairing: ' + error.message, 'error');
 	});
 }
 
@@ -305,6 +444,11 @@ function rssLeadsMassApplyPollJob() {
 
 function rssLeadsMassApplyPrepare() {
 	if (!rssLeadsMassApplyOrder.length || rssLeadsMassApplyJobId) return;
+	if (!rssLeadsGetSavedCvProfile()) {
+		rssLeadsMassApplySetStatus('Save your CV profile before preparing personalized DMs.', 'warning');
+		rssLeadsShowToast('Add CV profile first', 'Mass Apply uses it to personalize every Codex draft.', 'warning');
+		return;
+	}
 	var instructions = rssLeadsMassApplyTemplate ? rssLeadsMassApplyTemplate.value.trim() : rssLeadsMassApplyDefaultInstructions();
 	rssLeadsMassApplySaveInstructions(instructions);
 	var leads = rssLeadsMassApplyOrder.map(function (key) {
@@ -334,12 +478,12 @@ function rssLeadsMassApplyPrepare() {
 function rssLeadsMassApplyOpenNext() {
 	for (var index = 0; index < rssLeadsMassApplyOrder.length; index++) {
 		var item = rssLeadsMassApplyQueue[rssLeadsMassApplyOrder[index]];
-		if (item && item.draft) {
+		if (item && item.draft && item.status !== 'opened') {
 			rssLeadsMassApplyOpenReddit(item);
 			return;
 		}
 	}
-	rssLeadsShowToast('No prepared DMs', 'Prepare the queue with Codex first.', 'warning');
+	rssLeadsShowToast('No unopened DMs', 'Prepare the queue first, or use Reopen Reddit DM on an earlier draft.', 'warning');
 }
 
 function rssLeadsMassApplyBuildPanel() {
@@ -357,43 +501,132 @@ function rssLeadsMassApplyBuildPanel() {
 	header.appendChild(close);
 	rssLeadsMassApplyStatus = document.createElement('p');
 	rssLeadsMassApplyStatus.className = 'rss-leads-mass-status';
-	var authActions = document.createElement('div');
-	authActions.className = 'rss-leads-mass-actions';
-	var check = document.createElement('button');
-	check.type = 'button';
-	check.className = 'rss-leads-mass-secondary';
-	check.textContent = 'Check Codex';
-	check.addEventListener('click', rssLeadsMassApplyCheckStatus);
-	var login = document.createElement('button');
-	login.type = 'button';
-	login.className = 'rss-leads-mass-secondary';
-	login.textContent = 'Sign in to Codex';
-	login.addEventListener('click', rssLeadsMassApplyLogin);
-	authActions.appendChild(check);
-	authActions.appendChild(login);
-	var loginOutput = document.createElement('pre');
-	loginOutput.className = 'rss-leads-mass-login-output';
-	loginOutput.hidden = true;
+	var setup = document.createElement('section');
+	setup.className = 'rss-leads-mass-setup rss-leads-mass-helper-setup';
+	var setupTitle = document.createElement('strong');
+	setupTitle.textContent = 'Connect the helper';
+	var setupText = document.createElement('p');
+	setupText.textContent = 'Paste the helper token once. It stays in this browser and is never added to a draft.';
 	var tokenLabel = document.createElement('label');
 	tokenLabel.className = 'rss-leads-mass-label';
-	tokenLabel.textContent = 'Helper pairing token';
+	tokenLabel.textContent = 'Helper token';
 	rssLeadsMassApplyTokenInput = document.createElement('input');
 	rssLeadsMassApplyTokenInput.className = 'rss-leads-mass-token';
 	rssLeadsMassApplyTokenInput.type = 'password';
 	rssLeadsMassApplyTokenInput.autocomplete = 'off';
+	rssLeadsMassApplyTokenInput.placeholder = 'Paste helper token';
 	try {
 		rssLeadsMassApplyTokenInput.value = window.localStorage.getItem(rssLeadsMassApplyTokenStorageKey) || '';
 	} catch (error) {
 		// Leave it empty when browser storage is unavailable.
 	}
-	rssLeadsMassApplyTokenInput.addEventListener('change', function () {
-		try {
-			window.localStorage.setItem(rssLeadsMassApplyTokenStorageKey, rssLeadsMassApplyTokenInput.value.trim());
-		} catch (error) {
-			// The token remains available for this page session.
+	var connectActions = document.createElement('div');
+	connectActions.className = 'rss-leads-mass-actions';
+	var pasteToken = document.createElement('button');
+	pasteToken.type = 'button';
+	pasteToken.className = 'rss-leads-mass-secondary';
+	pasteToken.textContent = 'Paste token';
+	pasteToken.addEventListener('click', function () {
+		if (navigator.clipboard && navigator.clipboard.readText && window.isSecureContext) {
+			navigator.clipboard.readText().then(function (token) {
+				rssLeadsMassApplyTokenInput.value = String(token || '').trim();
+				rssLeadsMassApplyCheckStatus();
+			}).catch(function () {
+				rssLeadsMassApplyTokenInput.focus();
+				rssLeadsShowToast('Paste the helper token', 'Clipboard access was blocked, so use Ctrl+V or long-press Paste.', 'warning');
+			});
+		} else {
+			rssLeadsMassApplyTokenInput.focus();
+			rssLeadsShowToast('Paste the helper token', 'Use Ctrl+V or long-press Paste, then select Connect helper.', 'info');
 		}
-		rssLeadsMassApplyCheckStatus();
 	});
+	var connect = document.createElement('button');
+	connect.type = 'button';
+	connect.className = 'rss-leads-mass-primary';
+	connect.textContent = 'Connect helper';
+	connect.addEventListener('click', rssLeadsMassApplyCheckStatus);
+	rssLeadsMassApplyTokenInput.addEventListener('keydown', function (event) {
+		if (event.key === 'Enter') rssLeadsMassApplyCheckStatus();
+	});
+	connectActions.appendChild(pasteToken);
+	connectActions.appendChild(connect);
+	var tokenHelp = document.createElement('details');
+	tokenHelp.className = 'rss-leads-mass-token-help';
+	var tokenHelpSummary = document.createElement('summary');
+	tokenHelpSummary.textContent = 'Where do I get the helper token?';
+	var tokenCommand = document.createElement('code');
+	tokenCommand.className = 'rss-leads-mass-command';
+	tokenCommand.textContent = 'pct exec 102 -- docker exec rss-leads-mass-apply sh -c \'cat "$CODEX_HOME/mass-apply-token"\'';
+	tokenHelp.appendChild(tokenHelpSummary);
+	tokenHelp.appendChild(tokenCommand);
+	setup.appendChild(setupTitle);
+	setup.appendChild(setupText);
+	setup.appendChild(tokenLabel);
+	setup.appendChild(rssLeadsMassApplyTokenInput);
+	setup.appendChild(connectActions);
+	setup.appendChild(tokenHelp);
+	var securityNote = document.createElement('p');
+	securityNote.className = 'rss-leads-mass-security-note';
+	securityNote.textContent = 'Treat this token like a password.';
+	setup.appendChild(securityNote);
+	var connected = document.createElement('div');
+	connected.className = 'rss-leads-mass-connected';
+	connected.hidden = true;
+	var connectedText = document.createElement('span');
+	connectedText.textContent = '✓ Helper connected';
+	var changeToken = document.createElement('button');
+	changeToken.type = 'button';
+	changeToken.className = 'rss-leads-mass-link-button';
+	changeToken.textContent = 'Change token';
+	changeToken.addEventListener('click', function () {
+		rssLeadsMassApplySetConnected(false, false);
+		rssLeadsMassApplyTokenInput.focus();
+	});
+	connected.appendChild(connectedText);
+	connected.appendChild(changeToken);
+	var codexSetup = document.createElement('section');
+	codexSetup.className = 'rss-leads-mass-setup rss-leads-mass-codex-setup';
+	codexSetup.hidden = true;
+	var codexTitle = document.createElement('strong');
+	codexTitle.textContent = 'Pair Codex';
+	var codexText = document.createElement('p');
+	codexText.textContent = 'The official sign-in page opens automatically and the one-time code is copied when your browser allows it.';
+	rssLeadsMassApplyLoginButton = document.createElement('button');
+	rssLeadsMassApplyLoginButton.type = 'button';
+	rssLeadsMassApplyLoginButton.className = 'rss-leads-mass-primary';
+	rssLeadsMassApplyLoginButton.textContent = 'Pair Codex';
+	rssLeadsMassApplyLoginButton.addEventListener('click', rssLeadsMassApplyLogin);
+	codexSetup.appendChild(codexTitle);
+	codexSetup.appendChild(codexText);
+	codexSetup.appendChild(rssLeadsMassApplyLoginButton);
+	var loginOutput = document.createElement('pre');
+	loginOutput.className = 'rss-leads-mass-login-output';
+	loginOutput.hidden = true;
+	var loginLog = document.createElement('details');
+	loginLog.className = 'rss-leads-mass-login-log';
+	loginLog.hidden = true;
+	var loginLogSummary = document.createElement('summary');
+	loginLogSummary.textContent = 'Pairing details';
+	loginLog.appendChild(loginLogSummary);
+	loginLog.appendChild(loginOutput);
+	var loginDetails = document.createElement('div');
+	loginDetails.className = 'rss-leads-mass-login-details';
+	var signInLink = document.createElement('a');
+	signInLink.className = 'rss-leads-mass-primary rss-leads-mass-signin-link';
+	signInLink.textContent = 'Open official sign-in page';
+	signInLink.target = '_blank';
+	signInLink.rel = 'noopener noreferrer';
+	signInLink.hidden = true;
+	var codeCopy = document.createElement('button');
+	codeCopy.type = 'button';
+	codeCopy.className = 'rss-leads-mass-code-copy';
+	codeCopy.textContent = 'Copy one-time code';
+	codeCopy.hidden = true;
+	codeCopy.addEventListener('click', function () {
+		rssLeadsMassApplyCopyText(codeCopy.getAttribute('data-device-code'), 'The Codex one-time code is ready to paste.');
+	});
+	loginDetails.appendChild(signInLink);
+	loginDetails.appendChild(codeCopy);
 	var templateLabel = document.createElement('label');
 	templateLabel.className = 'rss-leads-mass-label';
 	templateLabel.textContent = 'Reusable DM instructions';
@@ -432,10 +665,11 @@ function rssLeadsMassApplyBuildPanel() {
 	list.className = 'rss-leads-mass-list';
 	rssLeadsMassApplyPanel.appendChild(header);
 	rssLeadsMassApplyPanel.appendChild(rssLeadsMassApplyStatus);
-	rssLeadsMassApplyPanel.appendChild(authActions);
-	rssLeadsMassApplyPanel.appendChild(loginOutput);
-	rssLeadsMassApplyPanel.appendChild(tokenLabel);
-	rssLeadsMassApplyPanel.appendChild(rssLeadsMassApplyTokenInput);
+	rssLeadsMassApplyPanel.appendChild(setup);
+	rssLeadsMassApplyPanel.appendChild(connected);
+	rssLeadsMassApplyPanel.appendChild(codexSetup);
+	rssLeadsMassApplyPanel.appendChild(loginDetails);
+	rssLeadsMassApplyPanel.appendChild(loginLog);
 	rssLeadsMassApplyPanel.appendChild(templateLabel);
 	rssLeadsMassApplyPanel.appendChild(rssLeadsMassApplyTemplate);
 	rssLeadsMassApplyPanel.appendChild(queueActions);

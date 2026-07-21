@@ -47,5 +47,9 @@ assert.equal(
 	rssLeadsRedditComposeUrl('Client_Name', 'Application: Video editor', 'Hello there\n\nI can help.'),
 	'https://www.reddit.com/message/compose/?to=Client_Name&subject=Application%3A%20Video%20editor&message=Hello%20there%0A%0AI%20can%20help.'
 );
+assert.equal(
+	rssLeadsQuickApplyChatGptUrl('Draft this DM\nwithout inventing facts.'),
+	'https://chatgpt.com/?q=Draft%20this%20DM%0Awithout%20inventing%20facts.'
+);
 
 console.log('quick-apply tests passed');
