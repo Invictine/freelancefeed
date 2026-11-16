@@ -1,4 +1,12 @@
-# FreshRSS Leads Stack
+# FreelanceFeed
+
+Self-host a feed reader that collects freelance leads and helps surface the posts worth opening first.
+
+## How to use it
+
+Start the Docker stack, finish the FreshRSS installer, and open **Reddit Leads** to browse filtered opportunities. Use **High Priority** for the strongest matches, or open **Main stream** when you want to see everything the reader saved. Optional AI labels and short summaries help you scan a busy feed.
+
+[Open the repository’s dashboard capture](Screenshot%202026-07-03%20192811.png).
 
 FreshRSS Leads Stack turns Reddit and RSS sources into a small lead dashboard.
 It watches selected communities, keeps likely hiring posts visible, marks noisy
@@ -111,8 +119,8 @@ use `docker-compose` instead.
 1. Clone the repository.
 
 ```bash
-git clone https://github.com/YOUR-USERNAME/rss-leads-stack.git
-cd rss-leads-stack
+git clone https://github.com/Invictine/freelancefeed.git
+cd freelancefeed
 ```
 
 2. Create a `.env` file.
