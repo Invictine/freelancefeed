@@ -1,6 +1,6 @@
 # FreelanceFeed
 
-Self-host a feed reader that collects freelance leads and helps surface the posts worth opening first.
+Freelance leads are easy to miss when they’re scattered across feeds. I built this stack to put Reddit and RSS in one reader, then pair AI summaries with priority and job-type labels so the useful posts rise above the noise. It stays on FreshRSS, where you control the feeds and can tune the filters; fork it for your own niches, and tell me what sources or labels you’d add.
 
 ## How to use it
 
