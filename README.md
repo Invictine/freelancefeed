@@ -6,7 +6,7 @@ Self-host a feed reader that collects freelance leads and helps surface the post
 
 Start the Docker stack, finish the FreshRSS installer, and open **Reddit Leads** to browse filtered opportunities. Use **High Priority** for the strongest matches, or open **Main stream** when you want to see everything the reader saved. Optional AI labels and short summaries help you scan a busy feed.
 
-[Open the repository’s dashboard capture](Screenshot%202026-07-03%20192811.png).
+[Open an early dashboard capture showing lead categories and priority labels](Screenshot%202026-07-03%20192811.png).
 
 FreshRSS Leads Stack turns Reddit and RSS sources into a small lead dashboard.
 It watches selected communities, keeps likely hiring posts visible, marks noisy
