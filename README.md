@@ -1,9 +1,9 @@
 # FreelanceFeed
 
-Sifting through fragmented freelance opportunities across multiple platforms creates unnecessary friction for independent developers. FreelanceFeed orchestrates a self-hosted FreshRSS backend paired with Reddit feed ingestion, keyword priority filtering, and optional local LLM summarization. Deploy the full Docker Compose stack locally to monitor high-value contract postings in real time. Contributions improving feed parsing accuracy and filtering heuristics are welcome.
+Freelance leads are easy to miss when they’re scattered across feeds. I built this stack to put Reddit and RSS in one reader, then pair AI summaries with priority and job-type labels so the useful posts rise above the noise. It stays on FreshRSS, where you control the feeds and can tune the filters; fork it for your own niches, and tell me what sources or labels you’d add.
 
 [![FreelanceFeed](media/overview.png)](media/walkthrough.mp4)
-*Click preview above to watch recorded interface demo.*
+*Click preview above to watch illustrated project overview.*
 
 
 ## How to use it
